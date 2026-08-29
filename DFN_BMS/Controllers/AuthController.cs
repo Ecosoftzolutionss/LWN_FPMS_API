@@ -13,64 +13,28 @@ namespace DFN_BMS.Controllers
         private readonly AppDbContext _context;
         private readonly EncryptionService _enc;
 
-        public AuthController(AppDbContext context, EncryptionService enc)
+        public AuthController(
+            AppDbContext context,
+            EncryptionService enc)
         {
             _context = context;
             _enc = enc;
         }
-        //Test
-        //Test
 
-        [HttpPost("heartbeat")]
-        public async Task<IActionResult> Heartbeat()
-        {
-            var sessionId = Request.Headers["SessionId"].FirstOrDefault();
-
-            if (string.IsNullOrEmpty(sessionId))
-                return Unauthorized();
-
-            var user = await _context.UserMasters.FirstOrDefaultAsync(x =>
-                x.SessionId.ToString() == sessionId &&
-                x.IsLoggedIn);
-
-            if (user == null)
-                return Unauthorized();
-
-            user.LastActivity = DateTime.Now;
-
-            await _context.SaveChangesAsync();
-
-            return Ok();
-        }
-
-
-        [HttpPost("logout")]
-        public async Task<IActionResult> Logout()
-        {
-            var sessionId = Request.Headers["SessionId"].FirstOrDefault();
-
-            var user = await _context.UserMasters
-                .FirstOrDefaultAsync(x => x.SessionId.ToString() == sessionId);
-
-            if (user != null)
-            {
-                user.IsLoggedIn = false;
-                user.SessionId = null;
-                user.DeviceId = null;
-                user.LastActivity = null;
-
-                await _context.SaveChangesAsync();
-            }
-
-            return Ok();
-        }
-
+        // =========================================================
+        // LOGIN
+        // POST: /api/Auth/login
+        // =========================================================
 
         [HttpPost("login")]
         public async Task<IActionResult> Login(LoginRequest request)
         {
             try
             {
+                // =================================================
+                // VALIDATE USERNAME
+                // =================================================
+
                 if (string.IsNullOrWhiteSpace(request.Username))
                 {
                     return BadRequest(new
@@ -78,6 +42,10 @@ namespace DFN_BMS.Controllers
                         message = "Username is required"
                     });
                 }
+
+                // =================================================
+                // VALIDATE PASSWORD
+                // =================================================
 
                 if (string.IsNullOrWhiteSpace(request.Password))
                 {
@@ -87,9 +55,17 @@ namespace DFN_BMS.Controllers
                     });
                 }
 
-                string loginText = request.Username.Trim().ToLower();
+                // =================================================
+                // NORMALIZE USERNAME
+                // =================================================
 
-               
+                string loginText =
+                    request.Username.Trim().ToLower();
+
+                // =================================================
+                // FIND ACTIVE USER
+                // =================================================
+
                 var user = await _context.UserMasters
                     .FirstOrDefaultAsync(u =>
                         u.IsActive &&
@@ -99,15 +75,29 @@ namespace DFN_BMS.Controllers
                             u.UserName.ToLower() == loginText
                         ));
 
+                // =================================================
+                // USER NOT FOUND
+                // =================================================
+
                 if (user == null)
                 {
                     return Unauthorized(new
                     {
-                        message = "Invalid User ID / Employee ID / User Name"
+                        message =
+                            "Invalid User ID / Employee ID / User Name"
                     });
                 }
 
-                string decryptPassword = _enc.Decrypt(user.PasswordHash);
+                // =================================================
+                // DECRYPT PASSWORD
+                // =================================================
+
+                string decryptPassword =
+                    _enc.Decrypt(user.PasswordHash);
+
+                // =================================================
+                // PASSWORD VALIDATION
+                // =================================================
 
                 if (decryptPassword != request.Password)
                 {
@@ -117,44 +107,42 @@ namespace DFN_BMS.Controllers
                     });
                 }
 
-            
-                var department = await _context.DepartmentMasters
-                    .FirstOrDefaultAsync(x => x.Id == user.DepartmentId);
+                // =================================================
+                // GET DEPARTMENT
+                // =================================================
 
-                if (!user.IsLoggedIn)
-                {
-                    user.SessionId = Guid.NewGuid();
-                }
-                else if (!string.Equals(user.DeviceId, request.DeviceId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return Ok(new
-                    {
-                        alreadyLoggedIn = true,
-                        message = $"User '{user.UserName}' is already logged in from another device."
-                    });
-                }
+                var department =
+                    await _context.DepartmentMasters
+                        .FirstOrDefaultAsync(
+                            x => x.Id == user.DepartmentId
+                        );
 
-                // Same device -> keep existing SessionId
-                user.DeviceId = request.DeviceId;
-                user.IsLoggedIn = true;
-                user.LoginTime = DateTime.Now;
-                user.LastActivity = DateTime.Now;
-
-                await _context.SaveChangesAsync();
-              
+                // =================================================
+                // NO SESSION
+                // NO DEVICE VALIDATION
+                // NO ISLOGGEDIN
+                // NO SESSIONID
+                // NO LASTACTIVITY
+                // =================================================
 
                 return Ok(new
                 {
                     message = "Login Success",
-                    sessionId = user.SessionId,
+
                     user = new
                     {
                         user.Id,
+
                         UserId = user.UserCode,
+
                         user.EmployeeId,
+
                         user.UserName,
+
                         user.DepartmentId,
-                        DepartmentName = department?.DepName,
+
+                        DepartmentName =
+                            department?.DepName
                     }
                 });
             }
@@ -162,7 +150,9 @@ namespace DFN_BMS.Controllers
             {
                 return StatusCode(500, new
                 {
-                    message = ex.InnerException?.Message ?? ex.Message
+                    message =
+                        ex.InnerException?.Message
+                        ?? ex.Message
                 });
             }
         }
