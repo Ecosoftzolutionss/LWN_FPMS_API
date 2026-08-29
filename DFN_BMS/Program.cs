@@ -56,7 +56,7 @@ if (app.Environment.IsDevelopment())
 app.UseRouting();
 app.UseCors("FrontendPolicy");
 app.UseMiddleware<ExceptionMiddleware>();
-app.UseMiddleware<SessionMiddleware>();
-app.UseAuthorization();
+//app.UseMiddleware<SessionMiddleware>();
+//app.UseAuthorization();
 app.MapControllers();
 app.Run();

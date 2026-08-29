@@ -107,6 +107,18 @@ namespace DFN_BMS.Controllers
             if (entity == null)
                 return NotFound(new { message = "Item Group not found" });
 
+            // Check whether this Item Group is already used
+            var isUsed = await _context.ItemMasters
+                .AnyAsync(x => x.ItemGroupId == id);
+
+            if (isUsed)
+            {
+                return BadRequest(new
+                {
+                    message = "This Item Group cannot be deleted because it is already used by an Item."
+                });
+            }
+
             _context.ItemGroupMasters.Remove(entity);
             await _context.SaveChangesAsync();
 

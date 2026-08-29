@@ -33,7 +33,6 @@ namespace DFN_BMS.Middleware
             using (var scope = _scopeFactory.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
                 var error = new ErrorLog
                 {
                     Message = ex.Message,
