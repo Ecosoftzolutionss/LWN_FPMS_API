@@ -60,7 +60,7 @@ namespace DFN_BMS.Controllers
         // (a StoreMaster row with PartNumberId set). GRN posting requires this
         // configuration to generate a Pallet No, so GRN Entry's Part Number
         // dropdown should only offer parts that are actually postable.
-      
+
         // GET: api/GrnEntry?posted=false
         // posted omitted -> everything. posted=false -> GRNs that still
         // have at least one un-posted line ("Show All GRN Post" tab).
@@ -417,6 +417,90 @@ namespace DFN_BMS.Controllers
         {
             public string? PostedBy { get; set; }
         }
+
+        // ★ NEW: request/response shapes for posting several lines in one call
+        // (Bulk GRN Post). LineIds can span a single GRN or, since posting
+        // is per-line, even multiple GRNs at once — the frontend currently
+        // only ever sends lines from the GRN the user has open.
+        public class PostBulkLinesRequest
+        {
+            public List<int> LineIds { get; set; } = new List<int>();
+            public string? PostedBy { get; set; }
+        }
+
+        // Internal result for a single line's post attempt, used by both
+        // the single-line and bulk-post endpoints so the pallet/FIFO
+        // generation logic only lives in one place.
+        private class PostLineResult
+        {
+            public int LineId { get; set; }
+            public bool Success { get; set; }
+            public string PalletNo { get; set; }
+            public string FifoPalletNo { get; set; }
+            public string Error { get; set; }
+        }
+
+        // Shared worker: posts exactly one GRN line (pallet no + FIFO no +
+        // posted flag/date/by), without any HTTP-specific error handling.
+        // Both PostLine and PostBulkLines call this so the two endpoints
+        // can never drift out of sync with each other.
+        private async Task<PostLineResult> PostSingleLineAsync(int lineId, string postedBy)
+        {
+            var line = await _context.GrnLines
+                .Include(l => l.Item)
+                .Include(l => l.Header)
+                    .ThenInclude(h => h.Supplier)
+                .FirstOrDefaultAsync(l => l.Id == lineId);
+
+            if (line == null)
+                return new PostLineResult { LineId = lineId, Success = false, Error = "GRN line not found" };
+
+            if (line.IsPosted)
+                return new PostLineResult { LineId = lineId, Success = false, Error = "This item is already posted" };
+
+            // ==========================================
+            // GENERATE PALLET NUMBER
+            // FROM STORE MASTER -> PALLET TYPE
+            // ==========================================
+
+            var palletNumber = await GenerateGrnPalletNumberAsync(line.ItemId);
+
+            if (palletNumber == null)
+            {
+                return new PostLineResult
+                {
+                    LineId = lineId,
+                    Success = false,
+                    Error = $"No pallet configuration found in Store Master for Part Number " +
+                            $"{line.Item?.ItemNumber ?? line.ItemId.ToString()}."
+                };
+            }
+
+            // ==========================================
+            // POST GRN LINE
+            // ==========================================
+
+            line.IsPosted = true;
+            line.PostedDate = DateTime.Now;
+            line.PostedBy = postedBy?.Trim();
+
+            // Example: GI-01, GI-02 ... GI-70
+            line.PalletNo = palletNumber;
+
+            // FIFO number
+            line.FifoPalletNo = await GenerateLineFifoPalletNoAsync();
+
+            await _context.SaveChangesAsync();
+
+            return new PostLineResult
+            {
+                LineId = lineId,
+                Success = true,
+                PalletNo = line.PalletNo,
+                FifoPalletNo = line.FifoPalletNo
+            };
+        }
+
         // PUT: api/GrnEntry/line/5/post
         // Marks a single GRN line ("item-wise" posting) as posted and
         // assigns it its own Pallet No / FIFO Pallet No, independent of
@@ -427,56 +511,20 @@ namespace DFN_BMS.Controllers
         {
             try
             {
-                var line = await _context.GrnLines
-                    .Include(l => l.Item)
-                    .Include(l => l.Header)
-                        .ThenInclude(h => h.Supplier)
-                    .FirstOrDefaultAsync(l => l.Id == lineId);
+                var result = await PostSingleLineAsync(lineId, req?.PostedBy);
 
-                if (line == null)
-                    return NotFound(new { message = "GRN line not found" });
-
-                if (line.IsPosted)
-                    return BadRequest(new { message = "This item is already posted" });
-
-                // ==========================================
-                // GENERATE PALLET NUMBER
-                // FROM STORE MASTER -> PALLET TYPE
-                // ==========================================
-
-                var palletNumber = await GenerateGrnPalletNumberAsync(line.ItemId);
-
-                if (palletNumber == null)
+                if (!result.Success)
                 {
-                    return BadRequest(new
-                    {
-                        message =
-                            $"No pallet configuration found in Store Master for Part Number " +
-                            $"{line.Item?.ItemNumber ?? line.ItemId.ToString()}."
-                    });
+                    return result.Error == "GRN line not found"
+                        ? NotFound(new { message = result.Error })
+                        : BadRequest(new { message = result.Error });
                 }
-
-                // ==========================================
-                // POST GRN LINE
-                // ==========================================
-
-                line.IsPosted = true;
-                line.PostedDate = DateTime.Now;
-                line.PostedBy = req?.PostedBy?.Trim();
-
-                // Example: GI-01, GI-02 ... GI-70
-                line.PalletNo = palletNumber;
-
-                // FIFO number
-                line.FifoPalletNo = await GenerateLineFifoPalletNoAsync();
-
-                await _context.SaveChangesAsync();
 
                 return Ok(new
                 {
-                    line.Id,
-                    line.PalletNo,
-                    line.FifoPalletNo
+                    Id = result.LineId,
+                    PalletNo = result.PalletNo,
+                    FifoPalletNo = result.FifoPalletNo
                 });
             }
             catch (Exception ex)
@@ -488,6 +536,54 @@ namespace DFN_BMS.Controllers
                     message = $"Post failed: {detail}"
                 });
             }
+        }
+
+        // PUT: api/GrnEntry/lines/post-bulk
+        // ★ NEW: Bulk GRN Post. Posts every line id supplied, one at a
+        // time (same pallet/FIFO generation as single-line posting), and
+        // reports back which lines succeeded and which failed instead of
+        // failing the whole batch on the first error — so, e.g., one line
+        // missing a Store Master pallet config doesn't block posting the
+        // rest of the selected items.
+        [HttpPut("lines/post-bulk")]
+        public async Task<IActionResult> PostBulkLines([FromBody] PostBulkLinesRequest req)
+        {
+            if (req == null || req.LineIds == null || req.LineIds.Count == 0)
+                return BadRequest(new { message = "Select at least one item to post" });
+
+            var distinctLineIds = req.LineIds.Distinct().ToList();
+
+            var posted = new List<object>();
+            var errors = new List<object>();
+
+            foreach (var lineId in distinctLineIds)
+            {
+                try
+                {
+                    var result = await PostSingleLineAsync(lineId, req.PostedBy);
+
+                    if (result.Success)
+                    {
+                        posted.Add(new
+                        {
+                            id = result.LineId,
+                            palletNo = result.PalletNo,
+                            fifoPalletNo = result.FifoPalletNo
+                        });
+                    }
+                    else
+                    {
+                        errors.Add(new { lineId, message = result.Error });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var detail = ex.InnerException?.Message ?? ex.Message;
+                    errors.Add(new { lineId, message = $"Post failed: {detail}" });
+                }
+            }
+
+            return Ok(new { posted, errors });
         }
 
         private async Task<string> GenerateGrnPalletNumberAsync(int itemId)
@@ -576,7 +672,7 @@ namespace DFN_BMS.Controllers
             }
         }
 
-   
+
 
         private async Task<string> GenerateLineFifoPalletNoAsync()
         {
