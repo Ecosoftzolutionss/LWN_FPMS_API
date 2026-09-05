@@ -89,58 +89,129 @@ namespace DFN_BMS.Controllers
         }
 
         // POST: api/PriceMaster
+        // POST: api/PriceMaster
+        // POST: api/PriceMaster
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] PriceMaster model)
         {
-            // NOTE: GroupCode intentionally not validated/required anymore.
             if (model.PartNumberId <= 0 ||
                 string.IsNullOrWhiteSpace(model.CustomerOrSupplier) ||
                 model.Rate <= 0)
             {
-                return BadRequest(new { message = "Part Number, Customer/Supplier and Rate are required" });
+                return BadRequest(new
+                {
+                    message = "Part Number, Customer/Supplier and Rate are required"
+                });
             }
 
-            var partExists = await _context.ItemMasters.AnyAsync(x => x.Id == model.PartNumberId);
+            var partExists = await _context.ItemMasters
+                .AnyAsync(x => x.Id == model.PartNumberId);
+
             if (!partExists)
-                return BadRequest(new { message = "Selected Part Number does not exist" });
+            {
+                return BadRequest(new
+                {
+                    message = "Selected Part Number does not exist"
+                });
+            }
+
+            var customerOrSupplier = model.CustomerOrSupplier.Trim();
+
+            // Only ONE record allowed for:
+            // Part Number + Customer/Supplier
+            var existingRecord = await _context.PriceMasters
+                .FirstOrDefaultAsync(x =>
+                    x.PartNumberId == model.PartNumberId &&
+                    x.CustomerOrSupplier == customerOrSupplier
+                );
+
+            if (existingRecord != null)
+            {
+                return Conflict(new
+                {
+                    message = "Price already exists for this Part Number and Customer/Supplier. Please edit the existing record."
+                });
+            }
 
             var entity = new PriceMaster
             {
                 PartNumberId = model.PartNumberId,
-                CustomerOrSupplier = model.CustomerOrSupplier.Trim(),
+                CustomerOrSupplier = customerOrSupplier,
                 Rate = model.Rate,
-                EffectiveDate = model.EffectiveDate == default ? DateTime.Now : model.EffectiveDate,
+                EffectiveDate = model.EffectiveDate == default
+                    ? DateTime.Now
+                    : model.EffectiveDate,
                 CreatedDate = DateTime.Now
             };
 
             _context.PriceMasters.Add(entity);
+
             await _context.SaveChangesAsync();
 
             return Ok(entity);
         }
-
+        // PUT: api/PriceMaster/5
+        // PUT: api/PriceMaster/5
         // PUT: api/PriceMaster/5
         [HttpPut("{id}")]
-        public async Task<IActionResult> Update(int id, [FromBody] PriceMaster model)
+        public async Task<IActionResult> Update(
+            int id,
+            [FromBody] PriceMaster model)
         {
-            var entity = await _context.PriceMasters.FindAsync(id);
+            var entity = await _context.PriceMasters
+                .FindAsync(id);
 
             if (entity == null)
-                return NotFound(new { message = "Price record not found" });
+            {
+                return NotFound(new
+                {
+                    message = "Price record not found"
+                });
+            }
 
             if (model.PartNumberId <= 0 ||
                 string.IsNullOrWhiteSpace(model.CustomerOrSupplier) ||
                 model.Rate <= 0)
             {
-                return BadRequest(new { message = "Part Number, Customer/Supplier and Rate are required" });
+                return BadRequest(new
+                {
+                    message = "Part Number, Customer/Supplier and Rate are required"
+                });
             }
 
-            var partExists = await _context.ItemMasters.AnyAsync(x => x.Id == model.PartNumberId);
-            if (!partExists)
-                return BadRequest(new { message = "Selected Part Number does not exist" });
+            var partExists = await _context.ItemMasters
+                .AnyAsync(x => x.Id == model.PartNumberId);
 
+            if (!partExists)
+            {
+                return BadRequest(new
+                {
+                    message = "Selected Part Number does not exist"
+                });
+            }
+
+            var customerOrSupplier = model.CustomerOrSupplier.Trim();
+
+            // Check whether another record already exists
+            // for the same Part Number + Customer/Supplier
+            var duplicateExists = await _context.PriceMasters
+                .AnyAsync(x =>
+                    x.Id != id &&
+                    x.PartNumberId == model.PartNumberId &&
+                    x.CustomerOrSupplier == customerOrSupplier
+                );
+
+            if (duplicateExists)
+            {
+                return Conflict(new
+                {
+                    message = "Another price record already exists for this Part Number and Customer/Supplier."
+                });
+            }
+
+            // Update existing record
             entity.PartNumberId = model.PartNumberId;
-            entity.CustomerOrSupplier = model.CustomerOrSupplier.Trim();
+            entity.CustomerOrSupplier = customerOrSupplier;
             entity.Rate = model.Rate;
             entity.EffectiveDate = model.EffectiveDate;
             entity.ModifiedDate = DateTime.Now;
