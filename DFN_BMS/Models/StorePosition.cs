@@ -19,8 +19,7 @@ namespace DFN_BMS.Models
         [Required]
         public int StoreMasterId { get; set; }   // FK -> StoreMaster.Id
 
-        [ForeignKey("StoreMasterId")]
-        [ValidateNever]
+     
         public StoreMaster? Store { get; set; }
 
         [Required]

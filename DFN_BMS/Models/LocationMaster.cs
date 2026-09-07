@@ -20,8 +20,7 @@ namespace DFN_BMS.Models
         [Required]
         public int StoreMasterId { get; set; }   // FK -> StoreMaster.Id
 
-        [ForeignKey("StoreMasterId")]
-        [ValidateNever]
+    
         public StoreMaster? StoreMaster { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;

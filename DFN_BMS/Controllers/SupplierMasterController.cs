@@ -15,247 +15,749 @@ namespace DFN_BMS.Controllers
     {
         private readonly AppDbContext _context;
 
-        private static readonly Regex ContactRegex = new Regex(@"^[0-9]{10}$");
+        // ---------------- REGEX VALIDATIONS ----------------
+
+        private static readonly Regex ContactRegex =
+            new Regex(@"^[0-9]{10}$");
+
         private static readonly Regex GstRegex =
-            new Regex(@"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$");
-        private static readonly Regex PanRegex = new Regex(@"^[A-Z]{5}[0-9]{4}[A-Z]{1}$");
+            new Regex(
+                @"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
+            );
+
+        private static readonly Regex PanRegex =
+            new Regex(@"^[A-Z]{5}[0-9]{4}[A-Z]{1}$");
+
+        private static readonly Regex EmailRegex =
+            new Regex(@"^[^\s@]+@[^\s@]+\.[^\s@]+$");
+
+
+        // ---------------- CONSTRUCTOR ----------------
 
         public SupplierMasterController(AppDbContext context)
         {
             _context = context;
         }
 
+
+        // =========================================================
+        // GET ALL SUPPLIERS
         // GET: api/SupplierMaster
+        // =========================================================
+
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
-            var list = await _context.SupplierMasters
-                .Include(x => x.SupplierGroup)
-                .OrderByDescending(x => x.Id)
-                .Select(x => new
-                {
-                    x.Id,
-                    x.SupplierCode,
-                    x.SupplierName,
-                    x.VendorCode,
-                    x.SupplierGroupId,
-                    SupplierGroupName = x.SupplierGroup.SupplierGroupType,
-                    x.Email,
-                    x.ContactNumber,
-                    x.PersonToContact,
-                    x.GstNo,
-                    x.PanNo,
-                    x.BillingCompanyName,
-                    x.BillingAddressLine1,
-                    x.BillingAddressLine2,
-                    x.BillingState,
-                    x.BillingStateCode,
-                    x.BillingPinCode,
-                    x.ShippingCompanyName,
-                    x.ShippingAddressLine1,
-                    x.ShippingAddressLine2,
-                    x.ShippingState,
-                    x.ShippingStateCode,
-                    x.ShippingPinCode
-                })
-                .ToListAsync();
+            try
+            {
+                var list = await _context.SupplierMasters
+                    .Include(x => x.SupplierGroup)
+                    .OrderByDescending(x => x.Id)
+                    .Select(x => new
+                    {
+                        x.Id,
+                        x.SupplierCode,
+                        x.SupplierName,
 
-            return Ok(list);
+                        x.SupplierGroupId,
+
+                        SupplierGroupName =
+                            x.SupplierGroup != null
+                                ? x.SupplierGroup.SupplierGroupType
+                                : null,
+
+                        x.Email,
+                        x.ContactNumber,
+                        x.PersonToContact,
+                        x.GstNo,
+                        x.PanNo,
+
+                        x.CreatedDate,
+                        x.ModifiedDate
+                    })
+                    .ToListAsync();
+
+                return Ok(list);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    500,
+                    new
+                    {
+                        message = "Failed to load suppliers",
+                        error = ex.Message
+                    }
+                );
+            }
         }
 
+
+        // =========================================================
+        // GET SUPPLIER BY ID
         // GET: api/SupplierMaster/5
+        // =========================================================
+
         [HttpGet("{id}")]
         public async Task<IActionResult> GetById(int id)
         {
-            var item = await _context.SupplierMasters.FindAsync(id);
+            try
+            {
+                var item = await _context.SupplierMasters
+                    .Include(x => x.SupplierGroup)
+                    .FirstOrDefaultAsync(x => x.Id == id);
 
-            if (item == null)
-                return NotFound(new { message = "Supplier not found" });
+                if (item == null)
+                {
+                    return NotFound(
+                        new
+                        {
+                            message = "Supplier not found"
+                        }
+                    );
+                }
 
-            return Ok(item);
+                return Ok(item);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    500,
+                    new
+                    {
+                        message = "Failed to load supplier",
+                        error = ex.Message
+                    }
+                );
+            }
         }
 
-        private static readonly Regex EmailRegex = new Regex(@"^[^\s@]+@[^\s@]+\.[^\s@]+$");
-        private static readonly Regex PincodeRegex = new Regex(@"^[0-9]{6}$");
 
-        private IActionResult ValidateSupplierFields(SupplierMaster model, int? excludeId = null)
+        // =========================================================
+        // COMMON VALIDATION
+        // =========================================================
+
+        private IActionResult? ValidateSupplierFields(
+            SupplierMaster model
+        )
         {
-            if (string.IsNullOrWhiteSpace(model.SupplierCode) ||
-                string.IsNullOrWhiteSpace(model.SupplierName) ||
-                string.IsNullOrWhiteSpace(model.VendorCode) ||
-                model.SupplierGroupId <= 0 ||
-                string.IsNullOrWhiteSpace(model.Email) ||
-                string.IsNullOrWhiteSpace(model.ContactNumber) ||
-                string.IsNullOrWhiteSpace(model.PersonToContact) ||
-                string.IsNullOrWhiteSpace(model.GstNo) ||
-                string.IsNullOrWhiteSpace(model.PanNo) ||
-                string.IsNullOrWhiteSpace(model.BillingCompanyName) ||
-                string.IsNullOrWhiteSpace(model.BillingAddressLine1) ||
-                string.IsNullOrWhiteSpace(model.BillingState) ||
-                string.IsNullOrWhiteSpace(model.BillingStateCode) ||
-                string.IsNullOrWhiteSpace(model.BillingPinCode) ||
-                string.IsNullOrWhiteSpace(model.ShippingCompanyName) ||
-                string.IsNullOrWhiteSpace(model.ShippingAddressLine1) ||
-                string.IsNullOrWhiteSpace(model.ShippingState) ||
-                string.IsNullOrWhiteSpace(model.ShippingStateCode) ||
-                string.IsNullOrWhiteSpace(model.ShippingPinCode))
+            if (model == null)
             {
-                return BadRequest(new { message = "Please fill all required fields" });
+                return BadRequest(
+                    new
+                    {
+                        message = "Invalid supplier data"
+                    }
+                );
             }
 
-            if (!ContactRegex.IsMatch(model.ContactNumber.Trim()))
-                return BadRequest(new { message = "Contact Number must be exactly 10 digits" });
+
+            // ---------------- REQUIRED FIELDS ----------------
+
+            if (string.IsNullOrWhiteSpace(model.SupplierCode))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Supplier ID is required"
+                    }
+                );
+            }
+
+            if (string.IsNullOrWhiteSpace(model.SupplierName))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Supplier Name is required"
+                    }
+                );
+            }
+
+            if (model.SupplierGroupId <= 0)
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Supplier Group is required"
+                    }
+                );
+            }
+
+            if (string.IsNullOrWhiteSpace(model.Email))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Email is required"
+                    }
+                );
+            }
+
+            if (string.IsNullOrWhiteSpace(model.ContactNumber))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Contact Number is required"
+                    }
+                );
+            }
+
+            if (string.IsNullOrWhiteSpace(model.PersonToContact))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Person to Contact is required"
+                    }
+                );
+            }
+
+            if (string.IsNullOrWhiteSpace(model.GstNo))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "GST No is required"
+                    }
+                );
+            }
+
+            if (string.IsNullOrWhiteSpace(model.PanNo))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "PAN No is required"
+                    }
+                );
+            }
+
+
+            // ---------------- EMAIL ----------------
 
             if (!EmailRegex.IsMatch(model.Email.Trim()))
-                return BadRequest(new { message = "Enter a valid email address" });
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Enter a valid email address"
+                    }
+                );
+            }
 
-            if (!PincodeRegex.IsMatch(model.BillingPinCode.Trim()))
-                return BadRequest(new { message = "Billing Pin Code must be exactly 6 digits" });
 
-            if (!PincodeRegex.IsMatch(model.ShippingPinCode.Trim()))
-                return BadRequest(new { message = "Shipping Pin Code must be exactly 6 digits" });
+            // ---------------- CONTACT NUMBER ----------------
+
+            if (!ContactRegex.IsMatch(model.ContactNumber.Trim()))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message = "Contact Number must be exactly 10 digits"
+                    }
+                );
+            }
+
+
+            // ---------------- GST ----------------
 
             if (!GstRegex.IsMatch(model.GstNo.Trim().ToUpper()))
-                return BadRequest(new { message = "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)" });
+            {
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)"
+                    }
+                );
+            }
+
+
+            // ---------------- PAN ----------------
 
             if (!PanRegex.IsMatch(model.PanNo.Trim().ToUpper()))
-                return BadRequest(new { message = "Enter a valid 10-character PAN (e.g. ABCDE1234F)" });
+            {
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Enter a valid 10-character PAN (e.g. ABCDE1234F)"
+                    }
+                );
+            }
+
 
             return null;
         }
 
+
+        // =========================================================
+        // CREATE SUPPLIER
         // POST: api/SupplierMaster
+        // =========================================================
+
         [HttpPost]
-        public async Task<IActionResult> Create([FromBody] SupplierMaster model)
+        public async Task<IActionResult> Create(
+            [FromBody] SupplierMaster model
+        )
         {
-            var validationResult = ValidateSupplierFields(model);
-            if (validationResult != null)
-                return validationResult;
-
-            var groupExists = await _context.SupplierGroupMasters.AnyAsync(g => g.Id == model.SupplierGroupId);
-            if (!groupExists)
-                return BadRequest(new { message = "Selected Supplier Group does not exist" });
-
-            var codeExists = await _context.SupplierMasters
-                .AnyAsync(x => x.SupplierCode.ToLower() == model.SupplierCode.Trim().ToLower());
-
-            if (codeExists)
-                return BadRequest(new { message = "Supplier ID already exists" });
-
-            var nameExists = await _context.SupplierMasters
-                .AnyAsync(x => x.SupplierName.ToLower() == model.SupplierName.Trim().ToLower());
-
-            if (nameExists)
-                return BadRequest(new { message = "Supplier Name already exists" });
-
-            var gstExists = await _context.SupplierMasters
-                .AnyAsync(x => x.GstNo.ToLower() == model.GstNo.Trim().ToLower());
-
-            if (gstExists)
-                return BadRequest(new { message = "GST No already exists" });
-
-            var entity = new SupplierMaster
+            try
             {
-                SupplierCode = model.SupplierCode.Trim(),
-                SupplierName = model.SupplierName.Trim(),
-                VendorCode = model.VendorCode.Trim(),
-                SupplierGroupId = model.SupplierGroupId,
-                Email = model.Email.Trim(),
-                ContactNumber = model.ContactNumber.Trim(),
-                PersonToContact = model.PersonToContact.Trim(),
-                GstNo = model.GstNo.Trim().ToUpper(),
-                PanNo = model.PanNo.Trim().ToUpper(),
-                BillingCompanyName = model.BillingCompanyName.Trim(),
-                BillingAddressLine1 = model.BillingAddressLine1.Trim(),
-                BillingAddressLine2 = model.BillingAddressLine2?.Trim(),
-                BillingState = model.BillingState.Trim(),
-                BillingStateCode = model.BillingStateCode.Trim(),
-                BillingPinCode = model.BillingPinCode.Trim(),
-                ShippingCompanyName = model.ShippingCompanyName.Trim(),
-                ShippingAddressLine1 = model.ShippingAddressLine1.Trim(),
-                ShippingAddressLine2 = model.ShippingAddressLine2?.Trim(),
-                ShippingState = model.ShippingState.Trim(),
-                ShippingStateCode = model.ShippingStateCode.Trim(),
-                ShippingPinCode = model.ShippingPinCode.Trim(),
-                CreatedDate = DateTime.Now
-            };
+                var validationResult =
+                    ValidateSupplierFields(model);
 
-            _context.SupplierMasters.Add(entity);
-            await _context.SaveChangesAsync();
+                if (validationResult != null)
+                {
+                    return validationResult;
+                }
 
-            return Ok(entity);
+
+                // ---------------- SUPPLIER GROUP ----------------
+
+                var groupExists =
+                    await _context.SupplierGroupMasters
+                        .AnyAsync(
+                            g => g.Id == model.SupplierGroupId
+                        );
+
+                if (!groupExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "Selected Supplier Group does not exist"
+                        }
+                    );
+                }
+
+
+                // ---------------- SUPPLIER ID DUPLICATE ----------------
+
+                var supplierCode =
+                    model.SupplierCode.Trim();
+
+                var codeExists =
+                    await _context.SupplierMasters
+                        .AnyAsync(
+                            x =>
+                                x.SupplierCode.ToLower()
+                                == supplierCode.ToLower()
+                        );
+
+                if (codeExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "Supplier ID already exists"
+                        }
+                    );
+                }
+
+
+                // ---------------- SUPPLIER NAME DUPLICATE ----------------
+
+                var supplierName =
+                    model.SupplierName.Trim();
+
+                var nameExists =
+                    await _context.SupplierMasters
+                        .AnyAsync(
+                            x =>
+                                x.SupplierName.ToLower()
+                                == supplierName.ToLower()
+                        );
+
+                if (nameExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "Supplier Name already exists"
+                        }
+                    );
+                }
+
+
+                // ---------------- GST DUPLICATE ----------------
+
+                var gstNo =
+                    model.GstNo.Trim().ToUpper();
+
+                var gstExists =
+                    await _context.SupplierMasters
+                        .AnyAsync(
+                            x =>
+                                x.GstNo.ToLower()
+                                == gstNo.ToLower()
+                        );
+
+                if (gstExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "GST No already exists"
+                        }
+                    );
+                }
+
+
+                // ---------------- PAN DUPLICATE ----------------
+
+                var panNo =
+                    model.PanNo.Trim().ToUpper();
+
+                var panExists =
+                    await _context.SupplierMasters
+                        .AnyAsync(
+                            x =>
+                                x.PanNo.ToLower()
+                                == panNo.ToLower()
+                        );
+
+                if (panExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "PAN No already exists"
+                        }
+                    );
+                }
+
+
+                // =================================================
+                // CREATE ENTITY
+                // =================================================
+
+                var entity = new SupplierMaster
+                {
+                    SupplierCode =
+                        model.SupplierCode.Trim(),
+
+                    SupplierName =
+                        model.SupplierName.Trim(),
+
+                    SupplierGroupId =
+                        model.SupplierGroupId,
+
+                    Email =
+                        model.Email.Trim(),
+
+                    ContactNumber =
+                        model.ContactNumber.Trim(),
+
+                    PersonToContact =
+                        model.PersonToContact.Trim(),
+
+                    GstNo =
+                        model.GstNo.Trim().ToUpper(),
+
+                    PanNo =
+                        model.PanNo.Trim().ToUpper(),
+
+                    CreatedDate =
+                        DateTime.Now,
+
+                    ModifiedDate =
+                        null
+                };
+
+
+                _context.SupplierMasters.Add(entity);
+
+                await _context.SaveChangesAsync();
+
+
+                return Ok(
+                    new
+                    {
+                        message =
+                            "Supplier Saved Successfully",
+
+                        data = entity
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    500,
+                    new
+                    {
+                        message =
+                            "Failed to save supplier",
+
+                        error =
+                            ex.InnerException?.Message
+                            ?? ex.Message
+                    }
+                );
+            }
         }
 
+
+        // =========================================================
+        // UPDATE SUPPLIER
         // PUT: api/SupplierMaster/5
+        // =========================================================
+
         [HttpPut("{id}")]
-        public async Task<IActionResult> Update(int id, [FromBody] SupplierMaster model)
+        public async Task<IActionResult> Update(
+            int id,
+            [FromBody] SupplierMaster model
+        )
         {
-            var entity = await _context.SupplierMasters.FindAsync(id);
+            try
+            {
+                var entity =
+                    await _context.SupplierMasters
+                        .FindAsync(id);
 
-            if (entity == null)
-                return NotFound(new { message = "Supplier not found" });
+                if (entity == null)
+                {
+                    return NotFound(
+                        new
+                        {
+                            message =
+                                "Supplier not found"
+                        }
+                    );
+                }
 
-            var validationResult = ValidateSupplierFields(model, id);
-            if (validationResult != null)
-                return validationResult;
 
-            var groupExists = await _context.SupplierGroupMasters.AnyAsync(g => g.Id == model.SupplierGroupId);
-            if (!groupExists)
-                return BadRequest(new { message = "Selected Supplier Group does not exist" });
+                // ---------------- VALIDATION ----------------
 
-            var nameExists = await _context.SupplierMasters
-                .AnyAsync(x => x.SupplierName.ToLower() == model.SupplierName.Trim().ToLower() && x.Id != id);
+                var validationResult =
+                    ValidateSupplierFields(model);
 
-            if (nameExists)
-                return BadRequest(new { message = "Supplier Name already exists" });
+                if (validationResult != null)
+                {
+                    return validationResult;
+                }
 
-            var gstExists = await _context.SupplierMasters
-                .AnyAsync(x => x.GstNo.ToLower() == model.GstNo.Trim().ToLower() && x.Id != id);
 
-            if (gstExists)
-                return BadRequest(new { message = "GST No already exists" });
+                // ---------------- SUPPLIER GROUP ----------------
 
-            entity.SupplierName = model.SupplierName.Trim();
-            entity.VendorCode = model.VendorCode.Trim();
-            entity.SupplierGroupId = model.SupplierGroupId;
-            entity.Email = model.Email.Trim();
-            entity.ContactNumber = model.ContactNumber.Trim();
-            entity.PersonToContact = model.PersonToContact.Trim();
-            entity.GstNo = model.GstNo.Trim().ToUpper();
-            entity.PanNo = model.PanNo.Trim().ToUpper();
-            entity.BillingCompanyName = model.BillingCompanyName.Trim();
-            entity.BillingAddressLine1 = model.BillingAddressLine1.Trim();
-            entity.BillingAddressLine2 = model.BillingAddressLine2?.Trim();
-            entity.BillingState = model.BillingState.Trim();
-            entity.BillingStateCode = model.BillingStateCode.Trim();
-            entity.BillingPinCode = model.BillingPinCode.Trim();
-            entity.ShippingCompanyName = model.ShippingCompanyName.Trim();
-            entity.ShippingAddressLine1 = model.ShippingAddressLine1.Trim();
-            entity.ShippingAddressLine2 = model.ShippingAddressLine2?.Trim();
-            entity.ShippingState = model.ShippingState.Trim();
-            entity.ShippingStateCode = model.ShippingStateCode.Trim();
-            entity.ShippingPinCode = model.ShippingPinCode.Trim();
-            entity.ModifiedDate = DateTime.Now;
-            // Note: SupplierCode is intentionally never changed on update.
+                var groupExists =
+                    await _context.SupplierGroupMasters
+                        .AnyAsync(
+                            g => g.Id == model.SupplierGroupId
+                        );
 
-            await _context.SaveChangesAsync();
+                if (!groupExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "Selected Supplier Group does not exist"
+                        }
+                    );
+                }
 
-            return Ok(entity);
+
+                // ---------------- SUPPLIER NAME DUPLICATE ----------------
+
+                var supplierName =
+                    model.SupplierName.Trim();
+
+                var nameExists =
+                    await _context.SupplierMasters
+                        .AnyAsync(
+                            x =>
+                                x.SupplierName.ToLower()
+                                == supplierName.ToLower()
+                                &&
+                                x.Id != id
+                        );
+
+                if (nameExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "Supplier Name already exists"
+                        }
+                    );
+                }
+
+
+                // ---------------- GST DUPLICATE ----------------
+
+                var gstNo =
+                    model.GstNo.Trim().ToUpper();
+
+                var gstExists =
+                    await _context.SupplierMasters
+                        .AnyAsync(
+                            x =>
+                                x.GstNo.ToLower()
+                                == gstNo.ToLower()
+                                &&
+                                x.Id != id
+                        );
+
+                if (gstExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "GST No already exists"
+                        }
+                    );
+                }
+
+
+                // ---------------- PAN DUPLICATE ----------------
+
+                var panNo =
+                    model.PanNo.Trim().ToUpper();
+
+                var panExists =
+                    await _context.SupplierMasters
+                        .AnyAsync(
+                            x =>
+                                x.PanNo.ToLower()
+                                == panNo.ToLower()
+                                &&
+                                x.Id != id
+                        );
+
+                if (panExists)
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "PAN No already exists"
+                        }
+                    );
+                }
+
+
+                // =================================================
+                // UPDATE ENTITY
+                // =================================================
+
+                // Supplier Code intentionally remains unchanged.
+                entity.SupplierName =
+                    model.SupplierName.Trim();
+
+                entity.SupplierGroupId =
+                    model.SupplierGroupId;
+
+                entity.Email =
+                    model.Email.Trim();
+
+                entity.ContactNumber =
+                    model.ContactNumber.Trim();
+
+                entity.PersonToContact =
+                    model.PersonToContact.Trim();
+
+                entity.GstNo =
+                    model.GstNo.Trim().ToUpper();
+
+                entity.PanNo =
+                    model.PanNo.Trim().ToUpper();
+
+                entity.ModifiedDate =
+                    DateTime.Now;
+
+
+                await _context.SaveChangesAsync();
+
+
+                return Ok(
+                    new
+                    {
+                        message =
+                            "Supplier Updated Successfully",
+
+                        data = entity
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    500,
+                    new
+                    {
+                        message =
+                            "Failed to update supplier",
+
+                        error =
+                            ex.InnerException?.Message
+                            ?? ex.Message
+                    }
+                );
+            }
         }
 
+
+        // =========================================================
+        // DELETE SUPPLIER
         // DELETE: api/SupplierMaster/5
+        // =========================================================
+
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
-            var entity = await _context.SupplierMasters.FindAsync(id);
+            try
+            {
+                var entity = await _context.SupplierMasters
+                    .FindAsync(id);
 
-            if (entity == null)
-                return NotFound(new { message = "Supplier not found" });
+                if (entity == null)
+                {
+                    return NotFound(new
+                    {
+                        message = "Supplier not found"
+                    });
+                }
 
-            _context.SupplierMasters.Remove(entity);
-            await _context.SaveChangesAsync();
+                // Check whether supplier is already used in GRN
+                var usedInGrn = await _context.GrnHeaders
+                    .AnyAsync(x => x.SupplierId == id);
 
-            return Ok(new { message = "Deleted Successfully" });
+                if (usedInGrn)
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            "This supplier cannot be deleted because it is already used in GRN transactions."
+                    });
+                }
+
+                _context.SupplierMasters.Remove(entity);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = "Supplier deleted successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Failed to delete supplier",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
         }
     }
 }

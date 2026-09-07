@@ -20,8 +20,7 @@ namespace DFN_BMS.Models
         [Required]
         public int SupplierId { get; set; }   // FK -> SupplierMaster.Id
 
-        [ForeignKey("SupplierId")]
-        [ValidateNever]
+    
         public SupplierMaster? Supplier { get; set; }
 
         [Required]
@@ -48,11 +47,11 @@ namespace DFN_BMS.Models
         public DateTime? PostedDate { get; set; }
 
         [MaxLength(30)]
-        public string? PalletNo { get; set; }         // e.g. EX-09, assigned on Post
+        public string? PalletNo { get; set; }        
         public string? CreatedBy { get; set; }
 
         [MaxLength(30)]
-        public string? FifoPalletNo { get; set; }      // e.g. F25070001, assigned on Post
+        public string? FifoPalletNo { get; set; }      
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 

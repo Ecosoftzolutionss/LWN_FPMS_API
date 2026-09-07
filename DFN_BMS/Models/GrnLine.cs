@@ -14,15 +14,13 @@ namespace DFN_BMS.Models
         [Required]
         public int GrnHeaderId { get; set; }   // FK -> GrnHeader.Id
 
-        [ForeignKey("GrnHeaderId")]
-        [ValidateNever]
+     
         public GrnHeader? Header { get; set; }
 
         [Required]
         public int ItemId { get; set; }   // FK -> ItemMaster.Id (Part Number)
 
-        [ForeignKey("ItemId")]
-        [ValidateNever]
+   
         public ItemMaster? Item { get; set; }
 
         [MaxLength(20)]

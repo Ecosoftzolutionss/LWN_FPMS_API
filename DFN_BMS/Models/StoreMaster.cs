@@ -16,30 +16,32 @@ namespace DFN_BMS.Models
         public string StoreLocation { get; set; }
 
         [Required]
-        public int PalletTypeId { get; set; }   // FK -> PalletTypeMaster.Id
+        public int PalletTypeId { get; set; }
 
-        [ForeignKey("PalletTypeId")]
         [ValidateNever]
         public PalletTypeMaster? PalletType { get; set; }
 
         [MaxLength(30)]
-        [ValidateNever]                         // server-generated, e.g. "IN-01" — don't validate on input
+        [ValidateNever]
         public string? PalletNumber { get; set; }
 
-        [Required]
+        /*
+         * Colour is automatically assigned from
+         * PALLET_TYPE_MASTER.
+         *
+         * User does NOT enter this value.
+         */
         [MaxLength(7)]
-        [RegularExpression(@"^#[0-9A-Fa-f]{6}$", ErrorMessage = "Colour must be a valid hex code (e.g. #1E88E5)")]
-        public string ColourCode { get; set; }
+        [ValidateNever]
+        public string? ColourCode { get; set; }
 
-        // Part Number dropdown on the Store Master screen.
-        // Nullable so existing rows saved before this field existed still load fine.
-        public int? PartNumberId { get; set; }   // FK -> ItemMaster.Id
+        public int? PartNumberId { get; set; }
 
-        [ForeignKey("PartNumberId")]
         [ValidateNever]
         public ItemMaster? PartNumber { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
+
         public DateTime? ModifiedDate { get; set; }
     }
 }

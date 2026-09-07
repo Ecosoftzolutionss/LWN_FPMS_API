@@ -20,472 +20,304 @@ namespace DFN_BMS.Controllers
         }
 
         // GET:
-        // api/Dashboard/summary?fromDate=2026-08-01&toDate=2026-08-19
+        // api/Dashboard/summary?year=2026&month=9
+        //
+        // NOTE ON SCOPE (read this before changing the numbers below):
+        //   - Inward / Outward (KPI cards + chart)  -> scoped to the
+        //     selected Year + Month. "Inward" = pallets created in that
+        //     month. "Outward" = distinct pallets issued in that month
+        //     (the pallet itself may have been created in an earlier
+        //     month — that's fine, it's still an outward EVENT this month).
+        //   - Available (KPI card) and Stock Status donut -> NOT scoped
+        //     to the filter. Both represent the live, current state of
+        //     the warehouse (as of "now"), because "how much is on hand
+        //     right now" isn't a property of a calendar month.
+        //   - Recent Activities -> scoped to the selected Year + Month,
+        //     same as before.
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary(
-            [FromQuery] DateTime? fromDate,
-            [FromQuery] DateTime? toDate)
+            [FromQuery] int? year,
+            [FromQuery] int? month)
         {
             try
             {
-                // =========================================================
-                // DATE FILTER
-                // =========================================================
-
                 var today = DateTime.Today;
+                var filterYear = year ?? today.Year;
+                var filterMonth = month ?? today.Month;
 
-                // Default = current week (Sunday -> Saturday)
-                var defaultFromDate =
-                    today.AddDays(-(int)today.DayOfWeek);
-
-                var filterFrom =
-                    fromDate?.Date ?? defaultFromDate;
-
-                var filterTo =
-                    toDate?.Date ?? today;
-
-                // Validate date range
-                if (filterFrom > filterTo)
+                if (filterMonth < 1 || filterMonth > 12)
                 {
-                    return BadRequest(new
-                    {
-                        message = "From Date cannot be greater than To Date."
-                    });
+                    return BadRequest(new { message = "Month must be between 1 and 12." });
                 }
 
-                // Include the complete To Date.
-                //
-                // Example:
-                // From = 2026-08-01
-                // To   = 2026-08-19
-                //
-                // Includes:
-                // 01-Aug 00:00:00
-                // through
-                // 19-Aug 23:59:59
-                var filterToExclusive = filterTo.AddDays(1);
-
+                var monthStart = new DateTime(filterYear, filterMonth, 1);
+                var monthEndExclusive = monthStart.AddMonths(1);
 
                 // =========================================================
-                // DATE FILTERED PALLETS
-                // =========================================================
-                //
-                // TOTAL PALLETS on dashboard is based on selected date range.
-                //
-                // Example:
-                // Select 01-Jul to 17-Jul
-                // A pallet created on 19-Aug will NOT be counted.
+                // INWARD (pallets created this month)
                 // =========================================================
 
-                var filteredPallets =
-                    await _context.GrnPallets
-                        .Where(p =>
-                            p.CreatedDate >= filterFrom &&
-                            p.CreatedDate < filterToExclusive)
-                        .ToListAsync();
+                var inwardPallets = await _context.GrnPallets
+                    .Where(p => p.CreatedDate >= monthStart && p.CreatedDate < monthEndExclusive)
+                    .ToListAsync();
 
-                var totalPalletsCount =
-                    filteredPallets.Count;
-
+                var inwardQty = inwardPallets.Count;
+                var inwardValue = inwardPallets.Sum(p => p.Quantity * p.Rate);
 
                 // =========================================================
-                // MATERIAL ISSUES
+                // OUTWARD (pallets issued this month — issue EVENTS, not
+                // tied to when the pallet was created)
                 // =========================================================
 
-                var filteredIssues =
-                    await _context.MaterialIssues
-                        .Where(i =>
-                            i.IssueDate >= filterFrom &&
-                            i.IssueDate < filterToExclusive)
-                        .ToListAsync();
+                var issuesThisMonth = await _context.MaterialIssues
+                    .Include(i => i.Item)
+                    .Where(i => i.IssueDate >= monthStart && i.IssueDate < monthEndExclusive)
+                    .ToListAsync();
 
+                var outwardQty = issuesThisMonth
+                    .Where(i => i.PalletNo != null)
+                    .Select(i => i.PalletNo)
+                    .Distinct()
+                    .Count();
 
-                // =========================================================
-                // STORE MOVEMENTS
-                // =========================================================
-
-                var filteredMovements =
-                    await _context.StoreMovements
-                        .Where(m =>
-                            m.MovementDate >= filterFrom &&
-                            m.MovementDate < filterToExclusive)
-                        .ToListAsync();
-
+                var outwardValue = issuesThisMonth.Sum(
+                    i => i.Quantity * (i.Item != null ? i.Item.UnitPrice : 0m));
 
                 // =========================================================
-                // ISSUED PALLETS
+                // AVAILABLE (all-time current snapshot — stuffed & not
+                // issued, as of right now)
                 // =========================================================
 
-                var issuedPalletNos =
-                    filteredIssues
+                var allPallets = await _context.GrnPallets.ToListAsync();
+
+                var allIssuedPalletNos = await _context.MaterialIssues
+                    .Where(i => i.PalletNo != null)
+                    .Select(i => i.PalletNo)
+                    .Distinct()
+                    .ToListAsync();
+                var issuedSet = allIssuedPalletNos.ToHashSet();
+
+                var stuffedPalletIdsAllTime = await _context.StoreMovements
+                    .Where(m => m.GrnPalletId != null)
+                    .Select(m => m.GrnPalletId!.Value)
+                    .Distinct()
+                    .ToListAsync();
+                var stuffedSet = stuffedPalletIdsAllTime.ToHashSet();
+
+                var availablePalletsNow = allPallets
+                    .Where(p => stuffedSet.Contains(p.Id)
+                                && !(p.PalletNo != null && issuedSet.Contains(p.PalletNo)))
+                    .ToList();
+
+                var availableQty = availablePalletsNow.Count;
+                var availableValue = availablePalletsNow.Sum(p => p.Quantity * p.Rate);
+
+                // =========================================================
+                // INWARD vs OUTWARD CHART — trailing 8 months, ending at
+                // the selected month (inclusive), crossing year boundaries
+                // if needed.
+                // =========================================================
+
+                var chartMonths = new List<(int Year, int Month, DateTime Start, DateTime EndExclusive)>();
+                for (var i = 7; i >= 0; i--)
+                {
+                    var d = monthStart.AddMonths(-i);
+                    chartMonths.Add((d.Year, d.Month, d, d.AddMonths(1)));
+                }
+
+                var chartRangeStart = chartMonths.First().Start;
+                var chartRangeEnd = chartMonths.Last().EndExclusive;
+
+                var chartPallets = await _context.GrnPallets
+                    .Where(p => p.CreatedDate >= chartRangeStart && p.CreatedDate < chartRangeEnd)
+                    .ToListAsync();
+
+                var chartIssues = await _context.MaterialIssues
+                    .Include(i => i.Item)
+                    .Where(i => i.IssueDate >= chartRangeStart && i.IssueDate < chartRangeEnd)
+                    .ToListAsync();
+
+                var chart = chartMonths.Select(cm =>
+                {
+                    var monthPallets = chartPallets
+                        .Where(p => p.CreatedDate >= cm.Start && p.CreatedDate < cm.EndExclusive)
+                        .ToList();
+
+                    var monthIssues = chartIssues
+                        .Where(i => i.IssueDate >= cm.Start && i.IssueDate < cm.EndExclusive)
+                        .ToList();
+
+                    var monthOutwardQty = monthIssues
                         .Where(i => i.PalletNo != null)
                         .Select(i => i.PalletNo)
                         .Distinct()
-                        .ToHashSet();
+                        .Count();
 
-
-                var issuedPalletsCount =
-                    filteredPallets.Count(
-                        p =>
-                            p.PalletNo != null &&
-                            issuedPalletNos.Contains(p.PalletNo)
-                    );
-
-
-                // =========================================================
-                // CURRENT/FILTERED PALLET STATUS
-                // =========================================================
-                //
-                // FIX: buckets must be mutually exclusive so they always
-                // sum to totalPalletsCount. Previously "closed" was
-                // computed as "not currently stuffed" WITHOUT excluding
-                // issued pallets — but an issued pallet is also "not
-                // currently stuffed" (Material Issue deletes its
-                // StoreMovement rows to free the rack slot). That meant
-                // an issued pallet was counted a second time as "closed",
-                // and "available" (derived by subtraction) silently ate
-                // the difference — a pallet genuinely sitting in a rack
-                // could show Available = 0% even while "Pallets by
-                // Location" correctly showed it occupying a slot.
-                //
-                // Each pallet now belongs to exactly one bucket:
-                //   - Issued    : has a MaterialIssue record
-                //   - Available : currently stuffed AND not issued
-                //   - Closed    : neither stuffed nor issued
-                // =========================================================
-
-                var stuffedPalletIds =
-                    filteredMovements
-                        .Where(m => m.GrnPalletId != null)
-                        .Select(m => m.GrnPalletId.Value)
-                        .ToHashSet();
-
-
-                var availablePalletsCount =
-                    filteredPallets.Count(
-                        p =>
-                            stuffedPalletIds.Contains(p.Id) &&
-                            !(p.PalletNo != null && issuedPalletNos.Contains(p.PalletNo))
-                    );
-
-
-                var closedPalletsCount =
-                    filteredPallets.Count(
-                        p =>
-                            !stuffedPalletIds.Contains(p.Id) &&
-                            !(p.PalletNo != null && issuedPalletNos.Contains(p.PalletNo))
-                    );
-
+                    return new
+                    {
+                        label = cm.Start.ToString("MMM yyyy"),
+                        inwardQty = monthPallets.Count,
+                        inwardValue = monthPallets.Sum(p => p.Quantity * p.Rate),
+                        outwardQty = monthOutwardQty,
+                        outwardValue = monthIssues.Sum(
+                            i => i.Quantity * (i.Item != null ? i.Item.UnitPrice : 0m)),
+                    };
+                }).ToList();
 
                 // =========================================================
-                // PALLETS BY LOCATION
-                // =========================================================
-                //
-                // Only movements inside selected date range are considered.
-                //
-                // IMPORTANT:
-                // We use filteredPallets for the dashboard count.
+                // STOCK STATUS DONUT — all-time, per ItemMaster, bucketed
+                // by on-hand qty vs SafetyLevel / ReorderLevel.
+                //   on-hand >= SafetyLevel               -> Safety   (green)
+                //   ReorderLevel <= on-hand < SafetyLevel -> Reorder  (orange)
+                //   on-hand < ReorderLevel                -> Danger   (red)
                 // =========================================================
 
-                var movementsWithLocation =
-                    await _context.StoreMovements
+                var items = await _context.ItemMasters.ToListAsync();
 
-                        .Include(m => m.StorePosition)
-                            .ThenInclude(sp => sp.Store)
+                var receivedByItem = await _context.GrnLines
+                    .Where(l => l.IsPosted)
+                    .GroupBy(l => l.ItemId)
+                    .Select(g => new { ItemId = g.Key, Qty = g.Sum(l => l.Quantity) })
+                    .ToDictionaryAsync(x => x.ItemId, x => x.Qty);
 
-                        .Include(m => m.RackRow)
-                            .ThenInclude(r => r.Column)
-                                .ThenInclude(c => c.Rack)
-                                    .ThenInclude(rk => rk.Store)
-                                        .ThenInclude(s => s.StoreMaster)
+                var issuedByItem = await _context.MaterialIssues
+                    .GroupBy(i => i.ItemId)
+                    .Select(g => new { ItemId = g.Key, Qty = g.Sum(i => i.Quantity) })
+                    .ToDictionaryAsync(x => x.ItemId, x => x.Qty);
 
-                        .Where(m =>
-                            m.GrnPalletId != null &&
-                            m.MovementDate >= filterFrom &&
-                            m.MovementDate < filterToExclusive)
+                int safetyCount = 0, reorderCount = 0, dangerCount = 0;
 
-                        .ToListAsync();
-
-
-                // Dictionary only for pallets inside selected date range.
-                var palletById =
-                    filteredPallets.ToDictionary(
-                        p => p.Id,
-                        p => p
-                    );
-
-
-                // =========================================================
-                // FIRST MOVEMENT PER PALLET
-                // =========================================================
-
-                var earliestMovementByPalletId =
-                    movementsWithLocation
-
-                        .GroupBy(m => m.GrnPalletId!.Value)
-
-                        .ToDictionary(
-                            g => g.Key,
-                            g => g
-                                .OrderBy(m => m.MovementDate)
-                                .First()
-                        );
-
-
-                // =========================================================
-                // LOCATION COUNTS
-                // =========================================================
-
-                var locationCounts =
-                    new Dictionary<string, int>(
-                        StringComparer.OrdinalIgnoreCase
-                    );
-
-
-                foreach (var kv in earliestMovementByPalletId)
+                foreach (var item in items)
                 {
-                    // Pallet must belong to selected date range.
-                    if (!palletById.TryGetValue(
-                            kv.Key,
-                            out var pallet))
+                    var received = receivedByItem.TryGetValue(item.Id, out var r) ? r : 0m;
+                    var issued = issuedByItem.TryGetValue(item.Id, out var iss) ? iss : 0m;
+                    var onHand = received - issued;
+
+                    if (onHand >= item.SafetyLevel)
                     {
-                        continue;
+                        safetyCount++;
                     }
-
-
-                    // Do not show issued pallets as available.
-                    if (
-                        pallet.PalletNo != null &&
-                        issuedPalletNos.Contains(pallet.PalletNo)
-                    )
+                    else if (onHand >= item.ReorderLevel)
                     {
-                        continue;
-                    }
-
-
-                    var movement = kv.Value;
-
-
-                    var location =
-                        movement.StorePosition?.Store?.StoreLocation
-                        ??
-                        movement.RackRow?.Column?.Rack?.Store?
-                            .StoreMaster?.StoreLocation
-                        ??
-                        "Unassigned";
-
-
-                    if (locationCounts.ContainsKey(location))
-                    {
-                        locationCounts[location]++;
+                        reorderCount++;
                     }
                     else
                     {
-                        locationCounts[location] = 1;
+                        dangerCount++;
                     }
                 }
 
+                var totalItems = items.Count;
 
-                var locations =
-                    locationCounts
+                int Pct(int part) => totalItems > 0 ? (int)Math.Round(part * 100m / totalItems) : 0;
 
-                        .Select(kv => new
+                // =========================================================
+                // RECENT ACTIVITIES — scoped to selected month, with
+                // Supplier + Part Name resolved per activity type.
+                // =========================================================
+
+                var grnHeadersThisMonth = await _context.GrnHeaders
+                    .Include(h => h.Supplier)
+                    .Include(h => h.Lines)
+                        .ThenInclude(l => l.Item)
+                    .Where(h => h.CreatedDate >= monthStart && h.CreatedDate < monthEndExclusive)
+                    .ToListAsync();
+
+                // Needed so Material Issue rows can resolve a supplier via
+                // the GRN number recorded on the issue (Material Issue has
+                // no supplier of its own).
+                var grnNumbers = issuesThisMonth
+                    .Where(i => i.GrnNumber != null)
+                    .Select(i => i.GrnNumber)
+                    .Distinct()
+                    .ToList();
+
+                var grnHeadersByNumber = await _context.GrnHeaders
+                    .Include(h => h.Supplier)
+                    .Where(h => grnNumbers.Contains(h.GrnNumber))
+                    .ToDictionaryAsync(h => h.GrnNumber, h => h);
+
+                var movementsThisMonth = await _context.StoreMovements
+                    .Include(m => m.StorePosition)
+                        .ThenInclude(sp => sp.Store)
+                    .Include(m => m.RackRow)
+                        .ThenInclude(r => r.Column)
+                            .ThenInclude(c => c.Rack)
+                                .ThenInclude(rk => rk.Store)
+                                    .ThenInclude(s => s.StoreMaster)
+                    .Include(m => m.GrnPallet)
+                        .ThenInclude(p => p!.GrnLine)
+                            .ThenInclude(l => l!.Item)
+                    .Include(m => m.GrnPallet)
+                        .ThenInclude(p => p!.GrnLine)
+                            .ThenInclude(l => l!.Header)
+                                .ThenInclude(h => h!.Supplier)
+                    .Where(m => m.GrnPalletId != null
+                                && m.MovementDate >= monthStart
+                                && m.MovementDate < monthEndExclusive)
+                    .ToListAsync();
+
+                var recentGrnActivities = grnHeadersThisMonth
+                    .OrderByDescending(h => h.CreatedDate)
+                    .Take(10)
+                    .Select(h => new
+                    {
+                        Type = "GRN Entry",
+                        Date = h.CreatedDate,
+                        RefNo = h.GrnNumber,
+                        Supplier = h.Supplier?.SupplierName ?? "—",
+                        PartName = h.Lines.Count == 1
+                            ? (h.Lines.First().Item?.ItemName ?? "—")
+                            : $"Multiple Items ({h.Lines.Count})",
+                        Quantity = h.Lines.Sum(l => (decimal?)l.Quantity) ?? 0,
+                        UserName = h.CreatedBy ?? "—",
+                    })
+                    .ToList();
+
+                var recentIssueActivities = issuesThisMonth
+                    .OrderByDescending(i => i.IssueDate)
+                    .Take(10)
+                    .Select(i => new
+                    {
+                        Type = "Material Issue",
+                        Date = i.IssueDate,
+                        RefNo = i.IssueNumber,
+                        Supplier = (i.GrnNumber != null
+                                    && grnHeadersByNumber.TryGetValue(i.GrnNumber, out var grnH))
+                            ? (grnH.Supplier?.SupplierName ?? "—")
+                            : "—",
+                        PartName = i.Item?.ItemName ?? "—",
+                        Quantity = i.Quantity,
+                        UserName = i.IssuedTo ?? "—",
+                    })
+                    .ToList();
+
+                var recentMovementActivities = movementsThisMonth
+                    .OrderByDescending(m => m.MovementDate)
+                    .Take(10)
+                    .Select(m =>
+                    {
+                        var line = m.GrnPallet?.GrnLine;
+
+                        return new
                         {
-                            StoreLocation = kv.Key,
-                            AvailableCount = kv.Value
-                        })
-
-                        .OrderByDescending(
-                            x => x.AvailableCount
-                        )
-
-                        .ToList();
-
-
-                // =========================================================
-                // DATE FILTERED GRN HEADERS
-                // =========================================================
-
-                var filteredGrnHeaders =
-                    await _context.GrnHeaders
-
-                        .Where(x =>
-                            x.CreatedDate >= filterFrom &&
-                            x.CreatedDate < filterToExclusive)
-
-                        .Include(x => x.Lines)
-
-                        .ToListAsync();
-
-
-                // =========================================================
-                // TRANSACTION SUMMARY
-                // =========================================================
-
-                var grnEntriesFiltered =
-                    filteredGrnHeaders.Count;
-
-
-                var palletsReceivedFiltered =
-                    filteredPallets.Count;
-
-
-                var materialIssuesFiltered =
-                    filteredIssues.Count;
-
-
-                var palletsIssuedFiltered =
-                    filteredIssues.Count;
-
-
-                var storeVerificationsFiltered =
-                    filteredMovements.Count;
-
-
-                // =========================================================
-                // RECENT GRN ACTIVITIES
-                // =========================================================
-
-                var recentGrnActivities =
-                    filteredGrnHeaders
-
-                        .OrderByDescending(
-                            x => x.CreatedDate
-                        )
-
-                        .Take(10)
-
-                        .Select(x => new
-                        {
-                            Type = "GRN Entry",
-
-                            Date = x.CreatedDate,
-
-                            RefNo = x.GrnNumber,
-
-                            PalletNo = (string)null,
-
-                            Location = (string)null,
-
-                            Quantity =
-                                x.Lines
-                                    .Sum(l =>
-                                        (decimal?)l.Quantity)
-                                ?? 0,
-
-                            CreatedBy = x.CreatedBy
-                        })
-
-                        .ToList();
-
-
-                // =========================================================
-                // RECENT MATERIAL ISSUE ACTIVITIES
-                // =========================================================
-
-                var recentIssueActivities =
-                    filteredIssues
-
-                        .OrderByDescending(
-                            i => i.IssueDate
-                        )
-
-                        .Take(10)
-
-                        .Select(i => new
-                        {
-                            Type = "Material Issue",
-
-                            Date = i.IssueDate,
-
-                            RefNo = i.IssueNumber,
-
-                            PalletNo = i.PalletNo,
-
-                            Location = i.StoreLocation,
-
-                            Quantity = i.Quantity,
-
-                            CreatedBy = i.IssuedBy
-                        })
-
-                        .ToList();
-
-
-                // =========================================================
-                // RECENT STORE MOVEMENT ACTIVITIES
-                // =========================================================
-
-                var recentMovementActivities =
-                    movementsWithLocation
-
-                        .OrderByDescending(
-                            m => m.MovementDate
-                        )
-
-                        .Take(10)
-
-                        .Select(m =>
-                        {
-                            var location =
-                                m.StorePosition?.Store?
-                                    .StoreLocation
-                                ??
-                                m.RackRow?.Column?.Rack?
-                                    .Store?
-                                    .StoreMaster?
-                                    .StoreLocation
-                                ??
-                                "Unassigned";
-
-
-                            palletById.TryGetValue(
-                                m.GrnPalletId!.Value,
-                                out var pallet
-                            );
-
-
-                            return new
-                            {
-                                Type = "Store Movement",
-
-                                Date = m.MovementDate,
-
-                                RefNo = (string)null,
-
-                                PalletNo =
-                                    pallet?.PalletNo,
-
-                                Location = location,
-
-                                Quantity = m.Quantity,
-
-                                CreatedBy = m.CreatedBy
-                            };
-                        })
-
-                        .ToList();
-
-
-                // =========================================================
-                // COMBINE RECENT ACTIVITIES
-                // =========================================================
-
-                var recentActivities =
-                    recentGrnActivities
-
-                        .Concat(recentIssueActivities)
-
-                        .Concat(recentMovementActivities)
-
-                        .OrderByDescending(
-                            a => a.Date
-                        )
-
-                        .Take(20)
-
-                        .ToList();
-
+                            Type = "Store Movement",
+                            Date = m.MovementDate,
+                            RefNo = line?.Header?.GrnNumber ?? "—",
+                            Supplier = line?.Header?.Supplier?.SupplierName ?? "—",
+                            PartName = line?.Item?.ItemName ?? "—",
+                            Quantity = m.Quantity,
+                            UserName = m.CreatedBy ?? "—",
+                        };
+                    })
+                    .ToList();
+
+                var recentActivities = recentGrnActivities
+                    .Concat(recentIssueActivities)
+                    .Concat(recentMovementActivities)
+                    .OrderByDescending(a => a.Date)
+                    .Take(20)
+                    .ToList();
 
                 // =========================================================
                 // RESPONSE
@@ -493,109 +325,36 @@ namespace DFN_BMS.Controllers
 
                 return Ok(new
                 {
-                    // =====================================================
-                    // DATE FILTER
-                    // =====================================================
+                    filter = new { year = filterYear, month = filterMonth },
 
-                    filter = new
+                    kpi = new
                     {
-                        fromDate =
-                            filterFrom.ToString("yyyy-MM-dd"),
-
-                        toDate =
-                            filterTo.ToString("yyyy-MM-dd")
+                        inwardQty,
+                        inwardValue,
+                        outwardQty,
+                        outwardValue,
+                        availableQty,
+                        availableValue,
                     },
 
+                    chart,
 
-                    // =====================================================
-                    // PALLET SUMMARY
-                    // =====================================================
-
-                    totalPallets =
-                        totalPalletsCount,
-
-                    availablePallets =
-                        availablePalletsCount,
-
-                    issuedPallets =
-                        issuedPalletsCount,
-
-
-                    // =====================================================
-                    // TOTAL ISSUES
-                    // =====================================================
-
-                    totalIssues =
-                        materialIssuesFiltered,
-
-
-                    // =====================================================
-                    // PALLET STATUS
-                    // =====================================================
-
-                    palletStatus = new
+                    stockStatus = new
                     {
-                        available =
-                            availablePalletsCount,
-
-                        issued =
-                            issuedPalletsCount,
-
-                        closed =
-                            closedPalletsCount
+                        totalItems,
+                        safety = new { count = safetyCount, pct = Pct(safetyCount) },
+                        reorder = new { count = reorderCount, pct = Pct(reorderCount) },
+                        danger = new { count = dangerCount, pct = Pct(dangerCount) },
                     },
 
-
-                    // =====================================================
-                    // LOCATIONS
-                    // =====================================================
-
-                    locations,
-
-
-                    // =====================================================
-                    // TRANSACTION SUMMARY
-                    // =====================================================
-
-                    transactionSummary = new
-                    {
-                        grnEntries =
-                            grnEntriesFiltered,
-
-                        palletsReceived =
-                            palletsReceivedFiltered,
-
-                        materialIssues =
-                            materialIssuesFiltered,
-
-                        palletsIssued =
-                            palletsIssuedFiltered,
-
-                        storeVerifications =
-                            storeVerificationsFiltered
-                    },
-
-
-                    // =====================================================
-                    // RECENT ACTIVITIES
-                    // =====================================================
-
-                    recentActivities
+                    recentActivities,
                 });
             }
             catch (Exception ex)
             {
-                var detail =
-                    ex.InnerException?.Message
-                    ?? ex.Message;
+                var detail = ex.InnerException?.Message ?? ex.Message;
 
-                return StatusCode(
-                    500,
-                    new
-                    {
-                        message =
-                            $"Failed to load dashboard: {detail}"
-                    });
+                return StatusCode(500, new { message = $"Failed to load dashboard: {detail}" });
             }
         }
     }

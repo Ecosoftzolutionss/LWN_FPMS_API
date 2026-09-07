@@ -16,8 +16,7 @@ namespace DFN_BMS.Models
         [Required]
         public int LocationRackId { get; set; }   // FK -> LocationRack.Id
 
-        [ForeignKey("LocationRackId")]
-        [ValidateNever]
+    
         public LocationRack? Rack { get; set; }
 
         [Required]

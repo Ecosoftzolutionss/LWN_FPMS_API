@@ -97,18 +97,43 @@ namespace DFN_BMS.Controllers
         }
 
         // DELETE: api/CustomerGroup/5
+        // DELETE: api/CustomerGroup/5
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
-            var entity = await _context.CustomerGroupMasters.FindAsync(id);
+            // 1. Check whether Customer Group exists
+            var entity = await _context.CustomerGroupMasters
+                .FindAsync(id);
 
             if (entity == null)
-                return NotFound(new { message = "Customer Group not found" });
+            {
+                return NotFound(new
+                {
+                    message = "Customer Group not found"
+                });
+            }
 
+            // 2. Check whether Customer Group is used by any Customer
+            var isUsed = await _context.CustomerMasters
+                .AnyAsync(x => x.CustomerGroupId == id);
+
+            if (isUsed)
+            {
+                return BadRequest(new
+                {
+                    message = "This Customer Group cannot be deleted because it is already used by a Customer."
+                });
+            }
+
+            // 3. Delete Customer Group
             _context.CustomerGroupMasters.Remove(entity);
+
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = "Deleted Successfully" });
+            return Ok(new
+            {
+                message = "Deleted Successfully"
+            });
         }
     }
 }

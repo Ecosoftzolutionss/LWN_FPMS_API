@@ -152,20 +152,20 @@ namespace DFN_BMS.Controllers
                             SupplierName = x.Supplier.SupplierName,
 
                             // BILLING ADDRESS
-                            BillingCompanyName = x.Supplier.BillingCompanyName,
-                            BillingAddressLine1 = x.Supplier.BillingAddressLine1,
-                            BillingAddressLine2 = x.Supplier.BillingAddressLine2,
-                            BillingState = x.Supplier.BillingState,
-                            BillingStateCode = x.Supplier.BillingStateCode,
-                            BillingPinCode = x.Supplier.BillingPinCode,
+                            //BillingCompanyName = x.Supplier.BillingCompanyName,
+                            //BillingAddressLine1 = x.Supplier.BillingAddressLine1,
+                            //BillingAddressLine2 = x.Supplier.BillingAddressLine2,
+                            //BillingState = x.Supplier.BillingState,
+                            //BillingStateCode = x.Supplier.BillingStateCode,
+                            //BillingPinCode = x.Supplier.BillingPinCode,
 
-                            // SHIPPING ADDRESS
-                            ShippingCompanyName = x.Supplier.ShippingCompanyName,
-                            ShippingAddressLine1 = x.Supplier.ShippingAddressLine1,
-                            ShippingAddressLine2 = x.Supplier.ShippingAddressLine2,
-                            ShippingState = x.Supplier.ShippingState,
-                            ShippingStateCode = x.Supplier.ShippingStateCode,
-                            ShippingPinCode = x.Supplier.ShippingPinCode,
+                            //// SHIPPING ADDRESS
+                            //ShippingCompanyName = x.Supplier.ShippingCompanyName,
+                            //ShippingAddressLine1 = x.Supplier.ShippingAddressLine1,
+                            //ShippingAddressLine2 = x.Supplier.ShippingAddressLine2,
+                            //ShippingState = x.Supplier.ShippingState,
+                            //ShippingStateCode = x.Supplier.ShippingStateCode,
+                            //ShippingPinCode = x.Supplier.ShippingPinCode,
 
                             // GST
                             GstNo = x.Supplier.GstNo

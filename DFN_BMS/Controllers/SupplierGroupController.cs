@@ -97,18 +97,61 @@ namespace DFN_BMS.Controllers
         }
 
         // DELETE: api/SupplierGroup/5
+        // DELETE: api/SupplierGroup/5
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
-            var entity = await _context.SupplierGroupMasters.FindAsync(id);
+            try
+            {
+                // ---------------------------------------------------------
+                // CHECK SUPPLIER GROUP EXISTS
+                // ---------------------------------------------------------
+                var entity = await _context.SupplierGroupMasters
+                    .FindAsync(id);
 
-            if (entity == null)
-                return NotFound(new { message = "Supplier Group not found" });
+                if (entity == null)
+                {
+                    return NotFound(new
+                    {
+                        message = "Supplier Group not found"
+                    });
+                }
 
-            _context.SupplierGroupMasters.Remove(entity);
-            await _context.SaveChangesAsync();
+                // ---------------------------------------------------------
+                // CHECK WHETHER SUPPLIER GROUP IS USED IN SUPPLIER MASTER
+                // ---------------------------------------------------------
+                var usedInSupplierMaster = await _context.SupplierMasters
+                    .AnyAsync(x => x.SupplierGroupId == id);
 
-            return Ok(new { message = "Deleted Successfully" });
+                if (usedInSupplierMaster)
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            "This Supplier Group cannot be deleted because it is already used in Supplier Master."
+                    });
+                }
+
+                // ---------------------------------------------------------
+                // DELETE SUPPLIER GROUP
+                // ---------------------------------------------------------
+                _context.SupplierGroupMasters.Remove(entity);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = "Supplier Group deleted successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Failed to delete Supplier Group",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
         }
     }
 }
