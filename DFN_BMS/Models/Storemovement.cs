@@ -21,20 +21,17 @@ namespace DFN_BMS.Models
 
         public int? GrnPalletId { get; set; }
 
-        [ForeignKey("GrnPalletId")]
-        [ValidateNever]
+      
         public GrnPallet? GrnPallet { get; set; }
 
         public int? StorePositionId { get; set; }
 
-        [ForeignKey("StorePositionId")]
-        [ValidateNever]
+      
         public StorePosition? StorePosition { get; set; }
 
         public int? RackRowId { get; set; }
 
-        [ForeignKey("RackRowId")]
-        [ValidateNever]
+     
         public RackRow? RackRow { get; set; }
 
         public int? SlotNumber { get; set; }

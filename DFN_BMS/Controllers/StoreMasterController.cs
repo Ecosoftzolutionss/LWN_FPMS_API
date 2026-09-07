@@ -19,6 +19,11 @@ namespace DFN_BMS.Controllers
             _context = context;
         }
 
+
+        // ============================================================
+        // GET: api/StoreMaster/configured-parts
+        // ============================================================
+
         [HttpGet("configured-parts")]
         public async Task<IActionResult> GetConfiguredParts()
         {
@@ -40,13 +45,20 @@ namespace DFN_BMS.Controllers
         }
 
 
+        // ============================================================
         // GET: api/StoreMaster/parts-list
-        // Feeds the new Part Number dropdown on the Store Master form.
+        // ============================================================
+
         [HttpGet("parts-list")]
         public async Task<IActionResult> GetPartsList()
         {
             var raw = await _context.ItemMasters
-                .Select(x => new { x.Id, x.ItemNumber, x.ItemName })
+                .Select(x => new
+                {
+                    x.Id,
+                    x.ItemNumber,
+                    x.ItemName
+                })
                 .ToListAsync();
 
             var data = raw
@@ -61,7 +73,14 @@ namespace DFN_BMS.Controllers
             return Ok(data);
         }
 
+
+        // ============================================================
         // GET: api/StoreMaster/pallet-types
+        //
+        // Returns Pallet Type + Colour
+        // Colour is used by frontend only for display.
+        // ============================================================
+
         [HttpGet("pallet-types")]
         public async Task<IActionResult> GetPalletTypes()
         {
@@ -69,176 +88,550 @@ namespace DFN_BMS.Controllers
                 .Select(x => new
                 {
                     value = x.Id,
-                    label = x.PalletName
+
+                    palletName = x.PalletName,
+
+                    colourCode = x.ColourCode,
+
+                    currentSequence = x.CurrentSequence,
+
+                    rangeFrom = x.RangeFrom,
+
+                    rangeTo = x.RangeTo
                 })
-                .OrderBy(x => x.label)
+                .OrderBy(x => x.palletName)
                 .ToListAsync();
 
             return Ok(data);
         }
 
+
+        // ============================================================
         // GET: api/StoreMaster
+        // ============================================================
+
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
             var list = await _context.StoreMasters
                 .Include(x => x.PalletType)
                 .Include(x => x.PartNumber)
+
                 .OrderByDescending(x => x.Id)
+
                 .Select(x => new
                 {
                     x.Id,
+
                     x.StoreLocation,
+
                     x.PalletTypeId,
-                    PalletTypeName = x.PalletType.PalletName,
+
+                    PalletTypeName =
+                        x.PalletType != null
+                            ? x.PalletType.PalletName
+                            : null,
+
                     x.PalletNumber,
+
+                    /*
+                     * Colour comes from STORE_MASTER.
+                     *
+                     * It is used only for the colour square
+                     * in the grid.
+                     */
+
                     x.ColourCode,
+
                     x.PartNumberId,
-                    PartNumberCode = x.PartNumber != null ? x.PartNumber.ItemNumber : null,
-                    PartName = x.PartNumber != null ? x.PartNumber.ItemName : null
+
+                    PartNumberCode =
+                        x.PartNumber != null
+                            ? x.PartNumber.ItemNumber
+                            : null,
+
+                    PartName =
+                        x.PartNumber != null
+                            ? x.PartNumber.ItemName
+                            : null
                 })
+
                 .ToListAsync();
 
             return Ok(list);
         }
 
+
+        // ============================================================
         // GET: api/StoreMaster/5
+        // ============================================================
+
         [HttpGet("{id}")]
         public async Task<IActionResult> GetById(int id)
         {
             var item = await _context.StoreMasters
+
                 .Include(x => x.PalletType)
+
                 .Include(x => x.PartNumber)
+
                 .Where(x => x.Id == id)
+
                 .Select(x => new
                 {
                     x.Id,
+
                     x.StoreLocation,
+
                     x.PalletTypeId,
-                    PalletTypeName = x.PalletType.PalletName,
+
+                    PalletTypeName =
+                        x.PalletType != null
+                            ? x.PalletType.PalletName
+                            : null,
+
                     x.PalletNumber,
+
                     x.ColourCode,
+
                     x.PartNumberId,
-                    PartNumberCode = x.PartNumber != null ? x.PartNumber.ItemNumber : null,
-                    PartName = x.PartNumber != null ? x.PartNumber.ItemName : null
+
+                    PartNumberCode =
+                        x.PartNumber != null
+                            ? x.PartNumber.ItemNumber
+                            : null,
+
+                    PartName =
+                        x.PartNumber != null
+                            ? x.PartNumber.ItemName
+                            : null
                 })
+
                 .FirstOrDefaultAsync();
 
             if (item == null)
-                return NotFound(new { message = "Store record not found" });
+            {
+                return NotFound(
+                    new
+                    {
+                        message =
+                            "Store record not found"
+                    });
+            }
 
             return Ok(item);
         }
 
-        private async Task<string> GeneratePalletNumberAsync(int palletTypeId)
+
+        // ============================================================
+        // Generate Pallet Number
+        // ============================================================
+
+        private async Task<string?> GeneratePalletNumberAsync(
+            int palletTypeId)
         {
-            var palletType = await _context.PalletTypeMasters.FindAsync(palletTypeId);
+            var palletType =
+                await _context.PalletTypeMasters
+                    .FirstOrDefaultAsync(
+                        x => x.Id == palletTypeId);
+
             if (palletType == null)
+            {
                 return null;
+            }
 
-            var nextSeq = palletType.CurrentSequence + 1;
 
-            palletType.CurrentSequence = nextSeq;
-            await _context.SaveChangesAsync();
+            // -----------------------------------------------
+            // Determine next sequence
+            // -----------------------------------------------
 
-            var prefix = palletType.PalletName.Length >= 2
-                ? palletType.PalletName.Substring(0, 2).ToUpper()
-                : palletType.PalletName.ToUpper();
+            var nextSeq =
+                palletType.CurrentSequence == 0
+                    ? palletType.RangeFrom
+                    : palletType.CurrentSequence + 1;
+
+
+            // -----------------------------------------------
+            // Check range
+            // -----------------------------------------------
+
+            if (nextSeq > palletType.RangeTo)
+            {
+                return null;
+            }
+
+
+            // -----------------------------------------------
+            // Update sequence
+            // -----------------------------------------------
+
+            palletType.CurrentSequence =
+                nextSeq;
+
+
+            // -----------------------------------------------
+            // Generate prefix
+            // -----------------------------------------------
+
+            var prefix =
+                palletType.PalletName.Length >= 2
+
+                    ? palletType.PalletName
+                        .Substring(0, 2)
+                        .ToUpper()
+
+                    : palletType.PalletName
+                        .ToUpper();
+
 
             return $"{prefix}-{nextSeq:D2}";
         }
 
+
+        // ============================================================
         // POST: api/StoreMaster
+        // ============================================================
+
         [HttpPost]
-        public async Task<IActionResult> Create([FromBody] StoreMaster model)
+        public async Task<IActionResult> Create(
+            [FromBody] StoreMaster model)
         {
-            if (string.IsNullOrWhiteSpace(model.StoreLocation) ||
-                model.PalletTypeId <= 0 ||
-                string.IsNullOrWhiteSpace(model.ColourCode))
+            // -----------------------------------------------
+            // Basic validation
+            // -----------------------------------------------
+
+            if (string.IsNullOrWhiteSpace(
+                    model.StoreLocation))
             {
-                return BadRequest(new { message = "Store Location, Pallet Type and Colour are required" });
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Store Location is required"
+                    });
             }
 
-            var typeExists = await _context.PalletTypeMasters.AnyAsync(x => x.Id == model.PalletTypeId);
-            if (!typeExists)
-                return BadRequest(new { message = "Selected Pallet Type does not exist" });
+
+            if (model.PalletTypeId <= 0)
+            {
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Pallet Type is required"
+                    });
+            }
+
+
+            // -----------------------------------------------
+            // Get selected pallet type
+            // -----------------------------------------------
+
+            var palletType =
+                await _context.PalletTypeMasters
+                    .FirstOrDefaultAsync(
+                        x => x.Id ==
+                             model.PalletTypeId);
+
+
+            if (palletType == null)
+            {
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Selected Pallet Type does not exist"
+                    });
+            }
+
+
+            // -----------------------------------------------
+            // Validate colour configured
+            // -----------------------------------------------
+
+            if (string.IsNullOrWhiteSpace(
+                    palletType.ColourCode))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Colour is not configured for the selected Pallet Type."
+                    });
+            }
+
+
+            // -----------------------------------------------
+            // Validate Part Number
+            // -----------------------------------------------
 
             if (model.PartNumberId.HasValue)
             {
-                var partExists = await _context.ItemMasters.AnyAsync(x => x.Id == model.PartNumberId.Value);
+                var partExists =
+                    await _context.ItemMasters
+                        .AnyAsync(
+                            x => x.Id ==
+                                 model.PartNumberId.Value);
+
                 if (!partExists)
-                    return BadRequest(new { message = "Selected Part Number does not exist" });
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "Selected Part Number does not exist"
+                        });
+                }
             }
 
-            var palletNumber = await GeneratePalletNumberAsync(model.PalletTypeId);
+
+            // -----------------------------------------------
+            // Generate pallet number
+            // -----------------------------------------------
+
+            var palletNumber =
+                await GeneratePalletNumberAsync(
+                    model.PalletTypeId);
+
+
             if (palletNumber == null)
-                return BadRequest(new { message = "Failed to generate Pallet Number for the selected Pallet Type" });
+            {
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Pallet number range is completed for the selected Pallet Type."
+                    });
+            }
+
+
+            // -----------------------------------------------
+            // Create entity
+            // -----------------------------------------------
 
             var entity = new StoreMaster
             {
-                StoreLocation = model.StoreLocation.Trim(),
-                PalletTypeId = model.PalletTypeId,
-                PalletNumber = palletNumber,
-                ColourCode = model.ColourCode.Trim(),
-                PartNumberId = model.PartNumberId,
-                CreatedDate = DateTime.Now
+                StoreLocation =
+                    model.StoreLocation.Trim(),
+
+                PalletTypeId =
+                    model.PalletTypeId,
+
+                PalletNumber =
+                    palletNumber,
+
+                /*
+                 * IMPORTANT:
+                 *
+                 * Colour is NOT received from frontend.
+                 *
+                 * It is taken directly from
+                 * PALLET_TYPE_MASTER.
+                 */
+
+                ColourCode =
+                    palletType.ColourCode.Trim(),
+
+                PartNumberId =
+                    model.PartNumberId,
+
+                CreatedDate =
+                    DateTime.Now
             };
 
+
             _context.StoreMasters.Add(entity);
+
             await _context.SaveChangesAsync();
 
-            return Ok(entity);
+
+            // -----------------------------------------------
+            // Return response
+            // -----------------------------------------------
+
+            return Ok(
+                new
+                {
+                    id = entity.Id,
+
+                    storeLocation =
+                        entity.StoreLocation,
+
+                    palletTypeId =
+                        entity.PalletTypeId,
+
+                    palletNumber =
+                        entity.PalletNumber,
+
+                    colourCode =
+                        entity.ColourCode,
+
+                    partNumberId =
+                        entity.PartNumberId,
+
+                    message =
+                        "Store Saved Successfully"
+                });
         }
 
+
+        // ============================================================
         // PUT: api/StoreMaster/5
-        // PUT: api/StoreMaster/5
+        // ============================================================
+
         [HttpPut("{id}")]
-        public async Task<IActionResult> Update(int id, [FromBody] StoreMaster model)
+        public async Task<IActionResult> Update(
+            int id,
+            [FromBody] StoreMaster model)
         {
-            var entity = await _context.StoreMasters.FindAsync(id);
+            // -----------------------------------------------
+            // Find existing store
+            // -----------------------------------------------
+
+            var entity =
+                await _context.StoreMasters
+                    .FirstOrDefaultAsync(
+                        x => x.Id == id);
+
 
             if (entity == null)
-                return NotFound(new { message = "Store record not found" });
-
-            // Pallet Type is assigned once at creation and never changes on edit,
-            // so it is intentionally NOT required/validated here.
-            if (string.IsNullOrWhiteSpace(model.StoreLocation) ||
-                string.IsNullOrWhiteSpace(model.ColourCode))
             {
-                return BadRequest(new { message = "Store Location and Colour are required" });
+                return NotFound(
+                    new
+                    {
+                        message =
+                            "Store record not found"
+                    });
             }
+
+
+            // -----------------------------------------------
+            // Validate location
+            // -----------------------------------------------
+
+            if (string.IsNullOrWhiteSpace(
+                    model.StoreLocation))
+            {
+                return BadRequest(
+                    new
+                    {
+                        message =
+                            "Store Location is required"
+                    });
+            }
+
+
+            // -----------------------------------------------
+            // Part Number validation
+            // -----------------------------------------------
 
             if (model.PartNumberId.HasValue)
             {
-                var partExists = await _context.ItemMasters.AnyAsync(x => x.Id == model.PartNumberId.Value);
+                var partExists =
+                    await _context.ItemMasters
+                        .AnyAsync(
+                            x => x.Id ==
+                                 model.PartNumberId.Value);
+
                 if (!partExists)
-                    return BadRequest(new { message = "Selected Part Number does not exist" });
+                {
+                    return BadRequest(
+                        new
+                        {
+                            message =
+                                "Selected Part Number does not exist"
+                        });
+                }
             }
 
-            entity.StoreLocation = model.StoreLocation.Trim();
-            entity.ColourCode = model.ColourCode.Trim();
-            entity.PartNumberId = model.PartNumberId;
-            // entity.PalletTypeId intentionally left unchanged — immutable after creation.
-            entity.ModifiedDate = DateTime.Now;
+
+            // -----------------------------------------------
+            // Update fields
+            // -----------------------------------------------
+
+            entity.StoreLocation =
+                model.StoreLocation.Trim();
+
+            entity.PartNumberId =
+                model.PartNumberId;
+
+            /*
+             * PalletTypeId is intentionally NOT changed.
+             *
+             * Pallet Number and Colour remain associated
+             * with the original pallet type.
+             */
+
+            entity.ModifiedDate =
+                DateTime.Now;
+
 
             await _context.SaveChangesAsync();
 
-            return Ok(entity);
+
+            return Ok(
+                new
+                {
+                    id = entity.Id,
+
+                    storeLocation =
+                        entity.StoreLocation,
+
+                    palletTypeId =
+                        entity.PalletTypeId,
+
+                    palletNumber =
+                        entity.PalletNumber,
+
+                    colourCode =
+                        entity.ColourCode,
+
+                    partNumberId =
+                        entity.PartNumberId,
+
+                    message =
+                        "Store Updated Successfully"
+                });
         }
 
+
+        // ============================================================
         // DELETE: api/StoreMaster/5
+        // ============================================================
+
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
-            var entity = await _context.StoreMasters.FindAsync(id);
+            var entity =
+                await _context.StoreMasters
+                    .FirstOrDefaultAsync(
+                        x => x.Id == id);
+
 
             if (entity == null)
-                return NotFound(new { message = "Store record not found" });
+            {
+                return NotFound(
+                    new
+                    {
+                        message =
+                            "Store record not found"
+                    });
+            }
 
-            _context.StoreMasters.Remove(entity);
+
+            _context.StoreMasters.Remove(
+                entity);
+
+
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = "Deleted Successfully" });
+
+            return Ok(
+                new
+                {
+                    message =
+                        "Deleted Successfully"
+                });
         }
     }
 }

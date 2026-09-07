@@ -19,8 +19,7 @@ namespace DFN_BMS.Models
         [Required]
         public int ItemId { get; set; }   // FK -> ItemMaster.Id (Part Number)
 
-        [ForeignKey("ItemId")]
-        [ValidateNever]
+    
         public ItemMaster? Item { get; set; }
 
         [Required]

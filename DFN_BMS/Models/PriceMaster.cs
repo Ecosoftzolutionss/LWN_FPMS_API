@@ -11,8 +11,7 @@ namespace DFN_BMS.Models
         public int Id { get; set; }
         [Required]
         public int PartNumberId { get; set; }   // FK -> ItemMaster.Id
-        [ForeignKey("PartNumberId")]
-        [ValidateNever]
+      
         public ItemMaster? PartNumber { get; set; }
         // REMOVED from the Price Master screen — no longer required
         // or shown on the form. Kept nullable on the model/table so

@@ -1,7 +1,6 @@
 ﻿using System;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
-using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
 
 namespace DFN_BMS.Models
 {
@@ -13,45 +12,37 @@ namespace DFN_BMS.Models
 
         [Required]
         [MaxLength(30)]
-        public string ItemNumber { get; set; }   // manually entered by the user
+        public string ItemNumber { get; set; }
 
         [Required]
         [MaxLength(150)]
         public string ItemName { get; set; }
 
         [Required]
-        public int ItemTypeId { get; set; }
-
-        [ForeignKey("ItemTypeId")]
-        [ValidateNever]
-        public ItemTypeMaster? ItemType { get; set; }
-
-        // Transient — NOT stored on this table. The frontend's Item Type
-        // CreatableSelect always sends this (whether the person picked an
-        // existing type or typed a brand new one). The controller resolves
-        // it to an ItemTypeId the same way UsersController resolves
-        // DepartmentName -> DepartmentId, creating the type if it's new.
-        [NotMapped]
-        public string ItemTypeName { get; set; }
-
-        [Required]
         public int ItemGroupId { get; set; }
 
-        [ForeignKey("ItemGroupId")]
-        [ValidateNever]
         public ItemGroupMaster? ItemGroup { get; set; }
 
         [MaxLength(20)]
         public string HsnCode { get; set; }
 
+        // Commercial Information
         [Required]
         [Column(TypeName = "decimal(18,2)")]
         public decimal UnitPrice { get; set; }
 
         [Required]
         [MaxLength(20)]
-        public string Uom { get; set; }           // free text, no fixed list
+        public string CustomerOrSupplier { get; set; }
 
+        [Required]
+        public DateTime EffectiveDate { get; set; }
+
+        [Required]
+        [MaxLength(20)]
+        public string Uom { get; set; }
+
+        // Item Physical Information
         [Column(TypeName = "decimal(18,3)")]
         public decimal? WeightPerUnit { get; set; }
 
@@ -62,7 +53,7 @@ namespace DFN_BMS.Models
         public string ItemModel { get; set; }
 
         [MaxLength(30)]
-        public string Usage { get; set; }         // free text, no fixed list
+        public string Usage { get; set; }
 
         [Column(TypeName = "decimal(18,2)")]
         public decimal? Length { get; set; }
@@ -76,6 +67,7 @@ namespace DFN_BMS.Models
         [MaxLength(500)]
         public string Description { get; set; }
 
+        // Stock Level Information
         [Required]
         [Column(TypeName = "decimal(18,3)")]
         public decimal SafetyLevel { get; set; }
@@ -86,7 +78,7 @@ namespace DFN_BMS.Models
 
         [Required]
         [MaxLength(20)]
-        public string DangerLevel { get; set; }   // free text, no fixed list
+        public string DangerLevel { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 

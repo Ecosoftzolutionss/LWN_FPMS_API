@@ -16,8 +16,7 @@ namespace DFN_BMS.Models
         [Required]
         public int RackColumnId { get; set; }   
 
-        [ForeignKey("RackColumnId")]
-        [ValidateNever]
+       
         public RackColumn? Column { get; set; }
 
         [Required]

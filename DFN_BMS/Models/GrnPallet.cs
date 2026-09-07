@@ -19,8 +19,7 @@ namespace DFN_BMS.Models
         [Required]
         public int GrnLineId { get; set; }   // FK -> GrnLine.Id
 
-        [ForeignKey("GrnLineId")]
-        [ValidateNever]
+     
         public GrnLine? GrnLine { get; set; }
 
         [Required]

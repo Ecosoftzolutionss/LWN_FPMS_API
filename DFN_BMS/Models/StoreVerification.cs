@@ -12,7 +12,7 @@ public class StoreVerification
 
     public int? PalletId { get; set; }
 
-    [ForeignKey(nameof(ItemId))]
+
     public ItemMaster? Item { get; set; }
 
     [MaxLength(100)]
