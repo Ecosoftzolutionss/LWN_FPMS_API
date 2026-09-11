@@ -19,25 +19,11 @@ namespace DFN_BMS.Controllers
             _context = context;
         }
 
-        // GET:
-        // api/Dashboard/summary?year=2026&month=9
-        //
-        // NOTE ON SCOPE (read this before changing the numbers below):
-        //   - Inward / Outward (KPI cards + chart)  -> scoped to the
-        //     selected Year + Month. "Inward" = pallets created in that
-        //     month. "Outward" = distinct pallets issued in that month
-        //     (the pallet itself may have been created in an earlier
-        //     month — that's fine, it's still an outward EVENT this month).
-        //   - Available (KPI card) and Stock Status donut -> NOT scoped
-        //     to the filter. Both represent the live, current state of
-        //     the warehouse (as of "now"), because "how much is on hand
-        //     right now" isn't a property of a calendar month.
-        //   - Recent Activities -> scoped to the selected Year + Month,
-        //     same as before.
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary(
             [FromQuery] int? year,
-            [FromQuery] int? month)
+            [FromQuery] int? month,
+            [FromQuery] string? partNo)
         {
             try
             {
@@ -46,188 +32,219 @@ namespace DFN_BMS.Controllers
                 var filterMonth = month ?? today.Month;
 
                 if (filterMonth < 1 || filterMonth > 12)
-                {
                     return BadRequest(new { message = "Month must be between 1 and 12." });
-                }
 
                 var monthStart = new DateTime(filterYear, filterMonth, 1);
                 var monthEndExclusive = monthStart.AddMonths(1);
 
-                // =========================================================
-                // INWARD (pallets created this month)
-                // =========================================================
+                // Normalize search term once
+                var partNoFilter = string.IsNullOrWhiteSpace(partNo)
+                    ? null
+                    : partNo.Trim().ToLower();
 
-                var inwardPallets = await _context.GrnPallets
-                    .Where(p => p.CreatedDate >= monthStart && p.CreatedDate < monthEndExclusive)
+                // Resolve matching ItemIds once — reused everywhere below
+                var matchingItemIds = partNoFilter == null
+                    ? null
+                    : await _context.ItemMasters
+                        .Where(i => i.ItemNumber != null &&
+                                    i.ItemNumber.ToLower().Contains(partNoFilter))
+                        .Select(i => i.Id)
+                        .ToListAsync();
+
+                // =====================================================
+                // INWARD - SELECTED MONTH
+                // =====================================================
+                var inwardLines = await _context.GrnLines
+                    .Where(l => l.IsPosted && l.Header != null &&
+                        (l.PostedDate ?? l.Header.PostedDate ?? l.Header.CreatedDate) >= monthStart &&
+                        (l.PostedDate ?? l.Header.PostedDate ?? l.Header.CreatedDate) < monthEndExclusive)
                     .ToListAsync();
 
-                var inwardQty = inwardPallets.Count;
-                var inwardValue = inwardPallets.Sum(p => p.Quantity * p.Rate);
+                if (matchingItemIds != null)
+                    inwardLines = inwardLines.Where(l => matchingItemIds.Contains(l.ItemId)).ToList();
 
-                // =========================================================
-                // OUTWARD (pallets issued this month — issue EVENTS, not
-                // tied to when the pallet was created)
-                // =========================================================
+                var inwardQty = inwardLines.Sum(l => l.Quantity);
+                var inwardPartCount = inwardQty;
+                var inwardValue = inwardLines.Sum(l => l.Quantity * l.Rate);
 
+                // =====================================================
+                // OUTWARD - SELECTED MONTH
+                // =====================================================
                 var issuesThisMonth = await _context.MaterialIssues
                     .Include(i => i.Item)
                     .Where(i => i.IssueDate >= monthStart && i.IssueDate < monthEndExclusive)
                     .ToListAsync();
 
-                var outwardQty = issuesThisMonth
-                    .Where(i => i.PalletNo != null)
-                    .Select(i => i.PalletNo)
-                    .Distinct()
-                    .Count();
+                if (matchingItemIds != null)
+                    issuesThisMonth = issuesThisMonth.Where(i => matchingItemIds.Contains(i.ItemId)).ToList();
 
-                var outwardValue = issuesThisMonth.Sum(
-                    i => i.Quantity * (i.Item != null ? i.Item.UnitPrice : 0m));
+                var outwardQty = issuesThisMonth.Sum(i => i.Quantity);
+                var outwardPartCount = outwardQty;
+                var outwardValue = issuesThisMonth.Sum(i => i.Quantity * (i.Item != null ? i.Item.UnitPrice : 0m));
 
-                // =========================================================
-                // AVAILABLE (all-time current snapshot — stuffed & not
-                // issued, as of right now)
-                // =========================================================
+                // =====================================================
+                // CURRENT AVAILABLE STOCK (filtered by part)
+                // =====================================================
+                var receivedQuery = _context.GrnLines.Where(l => l.IsPosted);
+                var issuedQuery = _context.MaterialIssues.AsQueryable();
 
-                var allPallets = await _context.GrnPallets.ToListAsync();
-
-                var allIssuedPalletNos = await _context.MaterialIssues
-                    .Where(i => i.PalletNo != null)
-                    .Select(i => i.PalletNo)
-                    .Distinct()
-                    .ToListAsync();
-                var issuedSet = allIssuedPalletNos.ToHashSet();
-
-                var stuffedPalletIdsAllTime = await _context.StoreMovements
-                    .Where(m => m.GrnPalletId != null)
-                    .Select(m => m.GrnPalletId!.Value)
-                    .Distinct()
-                    .ToListAsync();
-                var stuffedSet = stuffedPalletIdsAllTime.ToHashSet();
-
-                var availablePalletsNow = allPallets
-                    .Where(p => stuffedSet.Contains(p.Id)
-                                && !(p.PalletNo != null && issuedSet.Contains(p.PalletNo)))
-                    .ToList();
-
-                var availableQty = availablePalletsNow.Count;
-                var availableValue = availablePalletsNow.Sum(p => p.Quantity * p.Rate);
-
-                // =========================================================
-                // INWARD vs OUTWARD CHART — trailing 8 months, ending at
-                // the selected month (inclusive), crossing year boundaries
-                // if needed.
-                // =========================================================
-
-                var chartMonths = new List<(int Year, int Month, DateTime Start, DateTime EndExclusive)>();
-                for (var i = 7; i >= 0; i--)
+                if (matchingItemIds != null)
                 {
-                    var d = monthStart.AddMonths(-i);
+                    receivedQuery = receivedQuery.Where(l => matchingItemIds.Contains(l.ItemId));
+                    issuedQuery = issuedQuery.Where(i => matchingItemIds.Contains(i.ItemId));
+                }
+
+                var totalReceivedQty = await receivedQuery.SumAsync(l => l.Quantity);
+                var totalIssuedQty = await issuedQuery.SumAsync(i => i.Quantity);
+
+                var availableQty = totalReceivedQty - totalIssuedQty;
+                if (availableQty < 0) availableQty = 0;
+                var availablePartCount = availableQty;
+
+                var receivedByItem = await receivedQuery
+                    .GroupBy(l => l.ItemId)
+                    .Select(g => new { ItemId = g.Key, Quantity = g.Sum(x => x.Quantity) })
+                    .ToListAsync();
+
+                var issuedByItem = await issuedQuery
+                    .GroupBy(i => i.ItemId)
+                    .Select(g => new { ItemId = g.Key, Quantity = g.Sum(x => x.Quantity) })
+                    .ToListAsync();
+
+                var issuedDictionary = issuedByItem.ToDictionary(x => x.ItemId, x => x.Quantity);
+
+                var itemPriceDictionary = await _context.ItemMasters
+                    .ToDictionaryAsync(x => x.Id, x => x.UnitPrice);
+
+                decimal availableValue = 0m;
+                foreach (var received in receivedByItem)
+                {
+                    var issuedQty = issuedDictionary.TryGetValue(received.ItemId, out var issued) ? issued : 0m;
+                    var itemAvailableQty = received.Quantity - issuedQty;
+                    if (itemAvailableQty <= 0) continue;
+                    var unitPrice = itemPriceDictionary.TryGetValue(received.ItemId, out var price) ? price : 0m;
+                    availableValue += itemAvailableQty * unitPrice;
+                }
+
+                // =====================================================
+                // CHART - FIXED FISCAL YEAR (April -> March)
+                // =====================================================
+                // Always exactly 12 months, Apr -> Mar of the fiscal
+                // year containing the selected month/year.
+                //
+                // partNo filter ONLY changes each month's totals below
+                // (via matchingItemIds) — it NEVER changes which
+                // months appear on the chart. Selecting any month
+                // inside a fiscal year always renders the SAME 12
+                // month axis for that fiscal year.
+                // =====================================================
+
+                var fiscalStartYear = filterMonth >= 4 ? filterYear : filterYear - 1;
+                var fiscalStart = new DateTime(fiscalStartYear, 4, 1);
+
+                var chartMonths =
+                    new List<(int Year, int Month, DateTime Start, DateTime EndExclusive)>();
+
+                for (var i = 0; i < 12; i++)
+                {
+                    var d = fiscalStart.AddMonths(i);
                     chartMonths.Add((d.Year, d.Month, d, d.AddMonths(1)));
                 }
 
                 var chartRangeStart = chartMonths.First().Start;
                 var chartRangeEnd = chartMonths.Last().EndExclusive;
 
-                var chartPallets = await _context.GrnPallets
-                    .Where(p => p.CreatedDate >= chartRangeStart && p.CreatedDate < chartRangeEnd)
+                var chartGrnLines = await _context.GrnLines
+                    .Include(l => l.Header)
+                    .Where(l => l.IsPosted && l.Header != null &&
+                        (l.PostedDate ?? l.Header.PostedDate ?? l.Header.CreatedDate) >= chartRangeStart &&
+                        (l.PostedDate ?? l.Header.PostedDate ?? l.Header.CreatedDate) < chartRangeEnd)
                     .ToListAsync();
+
+                if (matchingItemIds != null)
+                    chartGrnLines = chartGrnLines.Where(l => matchingItemIds.Contains(l.ItemId)).ToList();
 
                 var chartIssues = await _context.MaterialIssues
                     .Include(i => i.Item)
                     .Where(i => i.IssueDate >= chartRangeStart && i.IssueDate < chartRangeEnd)
                     .ToListAsync();
 
+                if (matchingItemIds != null)
+                    chartIssues = chartIssues.Where(i => matchingItemIds.Contains(i.ItemId)).ToList();
+
                 var chart = chartMonths.Select(cm =>
                 {
-                    var monthPallets = chartPallets
-                        .Where(p => p.CreatedDate >= cm.Start && p.CreatedDate < cm.EndExclusive)
-                        .ToList();
+                    var monthGrnLines = chartGrnLines.Where(l => l.Header != null &&
+                        (l.PostedDate ?? l.Header.PostedDate ?? l.Header.CreatedDate) >= cm.Start &&
+                        (l.PostedDate ?? l.Header.PostedDate ?? l.Header.CreatedDate) < cm.EndExclusive).ToList();
 
-                    var monthIssues = chartIssues
-                        .Where(i => i.IssueDate >= cm.Start && i.IssueDate < cm.EndExclusive)
-                        .ToList();
-
-                    var monthOutwardQty = monthIssues
-                        .Where(i => i.PalletNo != null)
-                        .Select(i => i.PalletNo)
-                        .Distinct()
-                        .Count();
+                    var monthIssues = chartIssues.Where(i => i.IssueDate >= cm.Start && i.IssueDate < cm.EndExclusive).ToList();
 
                     return new
                     {
                         label = cm.Start.ToString("MMM yyyy"),
-                        inwardQty = monthPallets.Count,
-                        inwardValue = monthPallets.Sum(p => p.Quantity * p.Rate),
-                        outwardQty = monthOutwardQty,
-                        outwardValue = monthIssues.Sum(
-                            i => i.Quantity * (i.Item != null ? i.Item.UnitPrice : 0m)),
+                        inwardQty = monthGrnLines.Sum(l => l.Quantity),
+                        inwardValue = monthGrnLines.Sum(l => l.Quantity * l.Rate),
+                        outwardQty = monthIssues.Sum(i => i.Quantity),
+                        outwardValue = monthIssues.Sum(i => i.Quantity * (i.Item != null ? i.Item.UnitPrice : 0m))
                     };
                 }).ToList();
 
-                // =========================================================
-                // STOCK STATUS DONUT — all-time, per ItemMaster, bucketed
-                // by on-hand qty vs SafetyLevel / ReorderLevel.
-                //   on-hand >= SafetyLevel               -> Safety   (green)
-                //   ReorderLevel <= on-hand < SafetyLevel -> Reorder  (orange)
-                //   on-hand < ReorderLevel                -> Danger   (red)
-                // =========================================================
+                // =====================================================
+                // STOCK STATUS (restricted to matching items)
+                // =====================================================
+                var itemsQuery = _context.ItemMasters.AsQueryable();
+                if (matchingItemIds != null)
+                    itemsQuery = itemsQuery.Where(i => matchingItemIds.Contains(i.Id));
 
-                var items = await _context.ItemMasters.ToListAsync();
+                var items = await itemsQuery.ToListAsync();
 
-                var receivedByItem = await _context.GrnLines
+                var stockReceivedByItem = await _context.GrnLines
                     .Where(l => l.IsPosted)
                     .GroupBy(l => l.ItemId)
                     .Select(g => new { ItemId = g.Key, Qty = g.Sum(l => l.Quantity) })
                     .ToDictionaryAsync(x => x.ItemId, x => x.Qty);
 
-                var issuedByItem = await _context.MaterialIssues
+                var stockIssuedByItem = await _context.MaterialIssues
                     .GroupBy(i => i.ItemId)
                     .Select(g => new { ItemId = g.Key, Qty = g.Sum(i => i.Quantity) })
                     .ToDictionaryAsync(x => x.ItemId, x => x.Qty);
 
                 int safetyCount = 0, reorderCount = 0, dangerCount = 0;
-
                 foreach (var item in items)
                 {
-                    var received = receivedByItem.TryGetValue(item.Id, out var r) ? r : 0m;
-                    var issued = issuedByItem.TryGetValue(item.Id, out var iss) ? iss : 0m;
+                    var received = stockReceivedByItem.TryGetValue(item.Id, out var r) ? r : 0m;
+                    var issued = stockIssuedByItem.TryGetValue(item.Id, out var iss) ? iss : 0m;
                     var onHand = received - issued;
+                    if (onHand < 0) onHand = 0;
 
-                    if (onHand >= item.SafetyLevel)
-                    {
-                        safetyCount++;
-                    }
-                    else if (onHand >= item.ReorderLevel)
-                    {
-                        reorderCount++;
-                    }
-                    else
-                    {
-                        dangerCount++;
-                    }
+                    if (onHand >= item.SafetyLevel) safetyCount++;
+                    else if (onHand >= item.ReorderLevel) reorderCount++;
+                    else dangerCount++;
                 }
 
                 var totalItems = items.Count;
 
-                int Pct(int part) => totalItems > 0 ? (int)Math.Round(part * 100m / totalItems) : 0;
+                int Pct(int count) => totalItems == 0 ? 0 : (int)Math.Round(count * 100m / totalItems);
 
-                // =========================================================
-                // RECENT ACTIVITIES — scoped to selected month, with
-                // Supplier + Part Name resolved per activity type.
-                // =========================================================
+                var stockAlertCount = reorderCount + dangerCount;
 
+                // =====================================================
+                // RECENT ACTIVITIES (filtered by part, + PartNumber added)
+                // =====================================================
                 var grnHeadersThisMonth = await _context.GrnHeaders
                     .Include(h => h.Supplier)
-                    .Include(h => h.Lines)
-                        .ThenInclude(l => l.Item)
+                    .Include(h => h.Lines).ThenInclude(l => l.Item)
                     .Where(h => h.CreatedDate >= monthStart && h.CreatedDate < monthEndExclusive)
                     .ToListAsync();
 
-                // Needed so Material Issue rows can resolve a supplier via
-                // the GRN number recorded on the issue (Material Issue has
-                // no supplier of its own).
+                if (matchingItemIds != null)
+                    grnHeadersThisMonth = grnHeadersThisMonth
+                        .Where(h => h.Lines.Any(l => matchingItemIds.Contains(l.ItemId)))
+                        .ToList();
+
                 var grnNumbers = issuesThisMonth
-                    .Where(i => i.GrnNumber != null)
+                    .Where(i => !string.IsNullOrWhiteSpace(i.GrnNumber))
                     .Select(i => i.GrnNumber)
                     .Distinct()
                     .ToList();
@@ -238,40 +255,35 @@ namespace DFN_BMS.Controllers
                     .ToDictionaryAsync(h => h.GrnNumber, h => h);
 
                 var movementsThisMonth = await _context.StoreMovements
-                    .Include(m => m.StorePosition)
-                        .ThenInclude(sp => sp.Store)
-                    .Include(m => m.RackRow)
-                        .ThenInclude(r => r.Column)
-                            .ThenInclude(c => c.Rack)
-                                .ThenInclude(rk => rk.Store)
-                                    .ThenInclude(s => s.StoreMaster)
-                    .Include(m => m.GrnPallet)
-                        .ThenInclude(p => p!.GrnLine)
-                            .ThenInclude(l => l!.Item)
-                    .Include(m => m.GrnPallet)
-                        .ThenInclude(p => p!.GrnLine)
-                            .ThenInclude(l => l!.Header)
-                                .ThenInclude(h => h!.Supplier)
-                    .Where(m => m.GrnPalletId != null
-                                && m.MovementDate >= monthStart
-                                && m.MovementDate < monthEndExclusive)
+                    .Include(m => m.StorePosition).ThenInclude(sp => sp.Store)
+                    .Include(m => m.RackRow).ThenInclude(r => r.Column).ThenInclude(c => c.Rack).ThenInclude(rk => rk.Store).ThenInclude(s => s.StoreMaster)
+                    .Include(m => m.GrnPallet).ThenInclude(p => p!.GrnLine).ThenInclude(l => l!.Item)
+                    .Include(m => m.GrnPallet).ThenInclude(p => p!.GrnLine).ThenInclude(l => l!.Header).ThenInclude(h => h!.Supplier)
+                    .Where(m => m.GrnPalletId != null && m.MovementDate >= monthStart && m.MovementDate < monthEndExclusive)
                     .ToListAsync();
+
+                if (matchingItemIds != null)
+                    movementsThisMonth = movementsThisMonth
+                        .Where(m => m.GrnPallet?.GrnLine != null && matchingItemIds.Contains(m.GrnPallet.GrnLine.ItemId))
+                        .ToList();
 
                 var recentGrnActivities = grnHeadersThisMonth
                     .OrderByDescending(h => h.CreatedDate)
                     .Take(10)
-                    .Select(h => new
-                    {
-                        Type = "GRN Entry",
-                        Date = h.CreatedDate,
-                        RefNo = h.GrnNumber,
-                        Supplier = h.Supplier?.SupplierName ?? "—",
-                        PartName = h.Lines.Count == 1
-                            ? (h.Lines.First().Item?.ItemName ?? "—")
-                            : $"Multiple Items ({h.Lines.Count})",
-                        Quantity = h.Lines.Sum(l => (decimal?)l.Quantity) ?? 0,
-                        UserName = h.CreatedBy ?? "—",
-                    })
+                    .SelectMany(h => (matchingItemIds != null
+                            ? h.Lines.Where(l => matchingItemIds.Contains(l.ItemId))
+                            : h.Lines)
+                        .Select(l => new
+                        {
+                            Type = "GRN Entry",
+                            Date = h.CreatedDate,
+                            RefNo = h.GrnNumber,
+                            Supplier = h.Supplier?.SupplierName ?? "—",
+                            PartName = l.Item?.ItemName ?? "—",
+                            PartNumber = l.Item?.ItemNumber ?? "—",
+                            Quantity = l.Quantity,
+                            UserName = h.CreatedBy ?? "—"
+                        }))
                     .ToList();
 
                 var recentIssueActivities = issuesThisMonth
@@ -282,13 +294,13 @@ namespace DFN_BMS.Controllers
                         Type = "Material Issue",
                         Date = i.IssueDate,
                         RefNo = i.IssueNumber,
-                        Supplier = (i.GrnNumber != null
-                                    && grnHeadersByNumber.TryGetValue(i.GrnNumber, out var grnH))
+                        Supplier = i.GrnNumber != null && grnHeadersByNumber.TryGetValue(i.GrnNumber, out var grnH)
                             ? (grnH.Supplier?.SupplierName ?? "—")
                             : "—",
                         PartName = i.Item?.ItemName ?? "—",
+                        PartNumber = i.Item?.ItemNumber ?? "—",
                         Quantity = i.Quantity,
-                        UserName = i.IssuedTo ?? "—",
+                        UserName = i.IssuedTo ?? "—"
                     })
                     .ToList();
 
@@ -298,7 +310,6 @@ namespace DFN_BMS.Controllers
                     .Select(m =>
                     {
                         var line = m.GrnPallet?.GrnLine;
-
                         return new
                         {
                             Type = "Store Movement",
@@ -306,8 +317,9 @@ namespace DFN_BMS.Controllers
                             RefNo = line?.Header?.GrnNumber ?? "—",
                             Supplier = line?.Header?.Supplier?.SupplierName ?? "—",
                             PartName = line?.Item?.ItemName ?? "—",
+                            PartNumber = line?.Item?.ItemNumber ?? "—",
                             Quantity = m.Quantity,
-                            UserName = m.CreatedBy ?? "—",
+                            UserName = m.CreatedBy ?? "—"
                         };
                     })
                     .ToList();
@@ -315,45 +327,40 @@ namespace DFN_BMS.Controllers
                 var recentActivities = recentGrnActivities
                     .Concat(recentIssueActivities)
                     .Concat(recentMovementActivities)
-                    .OrderByDescending(a => a.Date)
+                    .OrderByDescending(x => x.Date)
                     .Take(20)
                     .ToList();
 
-                // =========================================================
-                // RESPONSE
-                // =========================================================
-
                 return Ok(new
                 {
-                    filter = new { year = filterYear, month = filterMonth },
-
+                    filter = new { year = filterYear, month = filterMonth, partNo = partNoFilter },
                     kpi = new
                     {
+                        inwardPartCount,
+                        outwardPartCount,
+                        availablePartCount,
                         inwardQty,
-                        inwardValue,
                         outwardQty,
-                        outwardValue,
                         availableQty,
-                        availableValue,
+                        inwardValue,
+                        outwardValue,
+                        availableValue
                     },
-
                     chart,
-
                     stockStatus = new
                     {
                         totalItems,
                         safety = new { count = safetyCount, pct = Pct(safetyCount) },
                         reorder = new { count = reorderCount, pct = Pct(reorderCount) },
-                        danger = new { count = dangerCount, pct = Pct(dangerCount) },
+                        danger = new { count = dangerCount, pct = Pct(dangerCount) }
                     },
-
-                    recentActivities,
+                    stockAlerts = stockAlertCount,
+                    recentActivities
                 });
             }
             catch (Exception ex)
             {
                 var detail = ex.InnerException?.Message ?? ex.Message;
-
                 return StatusCode(500, new { message = $"Failed to load dashboard: {detail}" });
             }
         }
