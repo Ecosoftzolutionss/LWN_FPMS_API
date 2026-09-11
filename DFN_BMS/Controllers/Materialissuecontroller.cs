@@ -20,9 +20,6 @@ namespace DFN_BMS.Controllers
         }
 
         // =========================================================
-        // GET ALL - WEB MATERIAL ISSUE SLIP REPORT
-        // =========================================================
-        // =========================================================
         // GET ALL - ONE ROW PER GRN
         // =========================================================
         [HttpGet]
@@ -31,13 +28,11 @@ namespace DFN_BMS.Controllers
             try
             {
                 var list = await _context.MaterialIssues
-                    .Include(x => x.Item)
                     .AsNoTracking()
                     .Where(x => !string.IsNullOrWhiteSpace(x.GrnNumber))
                     .GroupBy(x => x.GrnNumber)
                     .Select(g => new
                     {
-                        // Use latest record as representative
                         Id = g
                             .OrderByDescending(x => x.Id)
                             .Select(x => x.Id)
@@ -45,19 +40,16 @@ namespace DFN_BMS.Controllers
 
                         GrnNumber = g.Key,
 
-                        // Latest issue number
                         IssueNumber = g
                             .OrderByDescending(x => x.Id)
                             .Select(x => x.IssueNumber)
                             .FirstOrDefault(),
 
-                        // Latest issue date
                         IssueDate = g
                             .OrderByDescending(x => x.Id)
                             .Select(x => x.IssueDate)
                             .FirstOrDefault(),
 
-                        // Total quantity of all items in this GRN
                         Quantity = g.Sum(x => x.Quantity),
 
                         IssuedTo = g
@@ -87,21 +79,17 @@ namespace DFN_BMS.Controllers
             }
             catch (Exception ex)
             {
+                var detail = ex.InnerException?.Message ?? ex.Message;
+
                 return StatusCode(500, new
                 {
-                    message = $"Failed to load Material Issue records: {ex.Message}"
+                    message = $"Failed to load Material Issue records: {detail}"
                 });
             }
         }
+
         // =========================================================
-        // GET SINGLE MATERIAL ISSUE
-        // USED FOR WEB SLIP PREVIEW
-        // =========================================================
-        // GET MATERIAL ISSUE SLIP
-        // Returns one slip with dynamic items
-        // =========================================================
-        // =========================================================
-        // GET MATERIAL ISSUE SLIP
+        // GET SINGLE MATERIAL ISSUE SLIP
         // ONE GRN = ONE SLIP
         // ALL ITEMS UNDER THAT GRN
         // =========================================================
@@ -110,9 +98,6 @@ namespace DFN_BMS.Controllers
         {
             try
             {
-                // -----------------------------------------------------
-                // Find the selected record
-                // -----------------------------------------------------
                 var selected = await _context.MaterialIssues
                     .AsNoTracking()
                     .Where(x => x.Id == id)
@@ -137,10 +122,10 @@ namespace DFN_BMS.Controllers
                         message = "Material Issue record not found"
                     });
                 }
-                // -----------------------------------------------------
-                // GET SUPPLIER BILLING / SHIPPING DETAILS FROM GRN
-                // -----------------------------------------------------
 
+                // -----------------------------------------------------
+                // SUPPLIER DETAILS FROM GRN
+                // -----------------------------------------------------
                 var supplierAddress = await _context.GrnHeaders
                     .AsNoTracking()
                     .Where(x => x.GrnNumber == selected.GrnNumber)
@@ -148,31 +133,13 @@ namespace DFN_BMS.Controllers
                         ? null
                         : new
                         {
-                            // Supplier
                             SupplierName = x.Supplier.SupplierName,
-
-                            // BILLING ADDRESS
-                            //BillingCompanyName = x.Supplier.BillingCompanyName,
-                            //BillingAddressLine1 = x.Supplier.BillingAddressLine1,
-                            //BillingAddressLine2 = x.Supplier.BillingAddressLine2,
-                            //BillingState = x.Supplier.BillingState,
-                            //BillingStateCode = x.Supplier.BillingStateCode,
-                            //BillingPinCode = x.Supplier.BillingPinCode,
-
-                            //// SHIPPING ADDRESS
-                            //ShippingCompanyName = x.Supplier.ShippingCompanyName,
-                            //ShippingAddressLine1 = x.Supplier.ShippingAddressLine1,
-                            //ShippingAddressLine2 = x.Supplier.ShippingAddressLine2,
-                            //ShippingState = x.Supplier.ShippingState,
-                            //ShippingStateCode = x.Supplier.ShippingStateCode,
-                            //ShippingPinCode = x.Supplier.ShippingPinCode,
-
-                            // GST
                             GstNo = x.Supplier.GstNo
                         })
                     .FirstOrDefaultAsync();
+
                 // -----------------------------------------------------
-                // Get ALL ITEMS belonging to the same GRN
+                // ALL MATERIAL ISSUE ITEMS BELONGING TO THE SAME GRN
                 // -----------------------------------------------------
                 var items = await _context.MaterialIssues
                     .Include(x => x.Item)
@@ -198,241 +165,385 @@ namespace DFN_BMS.Controllers
                     })
                     .ToListAsync();
 
-                // -----------------------------------------------------
-                // Return ONE slip + ALL ITEMS
-                // -----------------------------------------------------
                 return Ok(new
                 {
                     selected.Id,
-
                     selected.GrnNumber,
                     selected.IssueNumber,
-
                     selected.IssuedTo,
                     selected.IssuedBy,
                     selected.StoreLocation,
                     selected.Remarks,
                     selected.IssueDate,
                     selected.CreatedDate,
-
-                    // Supplier Billing / Shipping Address
                     Supplier = supplierAddress,
-
                     TotalQuantity = items.Sum(x => x.Quantity),
-
                     Items = items
                 });
             }
             catch (Exception ex)
             {
+                var detail = ex.InnerException?.Message ?? ex.Message;
+
                 return StatusCode(500, new
                 {
-                    message = $"Failed to load Material Issue Slip: {ex.Message}"
+                    message = $"Failed to load Material Issue Slip: {detail}"
                 });
             }
         }
+
         // =========================================================
-        // MOBILE CREATE
-        // KEEP YOUR EXISTING POST
+        // CREATE MATERIAL ISSUE
+        //
+        // IMPORTANT:
+        // - StoreMovements is the source of truth for available stock.
+        // - MaterialIssue is the outward transaction history.
+        // - A pallet CAN be issued more than once while stock remains.
+        // - Only the requested quantity is removed from StoreMovement.
+        // - This supports partial pallet issue.
+        //
+        // Example:
+        //     Pallet stock = 10
+        //     Issue 3     -> remaining 7
+        //     Issue 4     -> remaining 3
+        //     Issue 3     -> remaining 0
         // =========================================================
-        //[HttpPost]
-        //public async Task<IActionResult> Create([FromBody] MaterialIssue model)
-        //{
-        //    try
-        //    {
-        //        if (model.ItemId <= 0 ||
-        //            model.Quantity <= 0 ||
-        //            string.IsNullOrWhiteSpace(model.IssuedTo) ||
-        //            string.IsNullOrWhiteSpace(model.IssuedBy))
-        //        {
-        //            return BadRequest(new
-        //            {
-        //                message =
-        //                    "Part Number, Quantity, Issued To and Issued By are required"
-        //            });
-        //        }
-
-        //        var itemExists = await _context.ItemMasters
-        //            .AnyAsync(x => x.Id == model.ItemId);
-
-        //        if (!itemExists)
-        //        {
-        //            return BadRequest(new
-        //            {
-        //                message = "Selected Part Number does not exist"
-        //            });
-        //        }
-
-        //        // Duplicate pallet protection
-        //        if (!string.IsNullOrWhiteSpace(model.PalletNo))
-        //        {
-        //            var alreadyIssued =
-        //                await _context.MaterialIssues
-        //                    .AnyAsync(x => x.PalletNo == model.PalletNo);
-
-        //            if (alreadyIssued)
-        //            {
-        //                return BadRequest(new
-        //                {
-        //                    message =
-        //                        $"Pallet {model.PalletNo} has already been issued."
-        //                });
-        //            }
-        //        }
-
-        //        var entity = new MaterialIssue
-        //        {
-        //            IssueNumber =
-        //                await GenerateIssueNumberAsync(),
-
-        //            ItemId = model.ItemId,
-
-        //            Quantity = model.Quantity,
-
-        //            IssuedTo =
-        //                model.IssuedTo.Trim(),
-
-        //            IssuedBy =
-        //                model.IssuedBy.Trim(),
-
-        //            StoreLocation =
-        //                model.StoreLocation?.Trim(),
-
-        //            PalletNo =
-        //                model.PalletNo?.Trim(),
-
-        //            GrnNumber =
-        //                model.GrnNumber?.Trim(),
-
-        //            Remarks =
-        //                model.Remarks?.Trim(),
-
-        //            IssueDate = DateTime.Now,
-
-        //            CreatedDate = DateTime.Now
-        //        };
-
-        //        _context.MaterialIssues.Add(entity);
-
-        //        await _context.SaveChangesAsync();
-
-        //        return Ok(new
-        //        {
-        //            entity.Id,
-        //            entity.IssueNumber
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        var detail =
-        //            ex.InnerException?.Message ??
-        //            ex.Message;
-
-        //        return StatusCode(500, new
-        //        {
-        //            message =
-        //                $"Save failed: {detail}"
-        //        });
-        //    }
-        //}
-
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] MaterialIssue model)
         {
+            // ---------------------------------------------------------
+            // BASIC VALIDATION
+            // ---------------------------------------------------------
+            if (model == null)
+            {
+                return BadRequest(new
+                {
+                    message = "Request body is required."
+                });
+            }
+
+            if (model.ItemId <= 0 ||
+                model.Quantity <= 0 ||
+                string.IsNullOrWhiteSpace(model.IssuedTo) ||
+                string.IsNullOrWhiteSpace(model.IssuedBy))
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Part Number, Quantity, Issued To and Issued By are required."
+                });
+            }
+
+            var itemExists = await _context.ItemMasters
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == model.ItemId);
+
+            if (!itemExists)
+            {
+                return BadRequest(new
+                {
+                    message = "Selected Part Number does not exist."
+                });
+            }
+
+            // =========================================================
+            // IMPORTANT
+            // =========================================================
+            // Your SQL Server DbContext uses a retrying execution
+            // strategy. Therefore BeginTransactionAsync() MUST be
+            // executed inside CreateExecutionStrategy().
+            //
+            // Do NOT return IActionResult directly from the async
+            // strategy lambda. That causes CS8031 in some EF Core
+            // versions because the selected ExecuteAsync overload is
+            // Task-returning.
+            //
+            // Instead, store the result in 'result' and return it after
+            // ExecuteAsync completes.
+            // =========================================================
+
+            IActionResult? result = null;
+
+            var strategy = _context.Database.CreateExecutionStrategy();
+
             try
             {
-                if (model.ItemId <= 0 ||
-                    model.Quantity <= 0 ||
-                    string.IsNullOrWhiteSpace(model.IssuedTo) ||
-                    string.IsNullOrWhiteSpace(model.IssuedBy))
+                await strategy.ExecuteAsync(async () =>
                 {
-                    return BadRequest(new
+                    await using var transaction =
+                        await _context.Database.BeginTransactionAsync(
+                            System.Data.IsolationLevel.Serializable);
+
+                    try
                     {
-                        message =
-                            "Part Number, Quantity, Issued To and Issued By are required"
-                    });
-                }
-
-                var itemExists = await _context.ItemMasters
-                    .AnyAsync(x => x.Id == model.ItemId);
-
-                if (!itemExists)
-                {
-                    return BadRequest(new
-                    {
-                        message = "Selected Part Number does not exist"
-                    });
-                }
-
-                // Duplicate pallet protection — match on GrnPalletId (safe/unique),
-                // not PalletNo (recyclable label).
-                if (model.GrnPalletId.HasValue)
-                {
-                    var alreadyIssued =
-                        await _context.MaterialIssues
-                            .AnyAsync(x => x.GrnPalletId == model.GrnPalletId.Value);
-
-                    if (alreadyIssued)
-                    {
-                        return BadRequest(new
+                        // =================================================
+                        // PALLET-BASED ISSUE
+                        // =================================================
+                        if (model.GrnPalletId.HasValue)
                         {
-                            message =
-                                $"Pallet {model.PalletNo} has already been issued."
+                            var pallet = await _context.GrnPallets
+                                .Include(p => p.GrnLine)
+                                .FirstOrDefaultAsync(
+                                    p => p.Id == model.GrnPalletId.Value);
+
+                            if (pallet == null)
+                            {
+                                result = BadRequest(new
+                                {
+                                    message = "Selected pallet does not exist."
+                                });
+
+                                await transaction.RollbackAsync();
+                                return;
+                            }
+
+                            if (pallet.GrnLine == null)
+                            {
+                                result = BadRequest(new
+                                {
+                                    message =
+                                        "Selected pallet is not linked to a GRN line."
+                                });
+
+                                await transaction.RollbackAsync();
+                                return;
+                            }
+
+                            if (pallet.GrnLine.ItemId != model.ItemId)
+                            {
+                                result = BadRequest(new
+                                {
+                                    message =
+                                        "Selected pallet does not belong to the selected Part Number."
+                                });
+
+                                await transaction.RollbackAsync();
+                                return;
+                            }
+
+                            // -------------------------------------------------
+                            // StoreMovement = CURRENT PALLET STOCK
+                            // -------------------------------------------------
+                            var movements = await _context.StoreMovements
+                                .Where(x =>
+                                    x.GrnPalletId == model.GrnPalletId.Value &&
+                                    x.Quantity > 0)
+                                .OrderBy(x => x.MovementDate)
+                                .ThenBy(x => x.Id)
+                                .ToListAsync();
+
+                            var availableQty = movements.Sum(x => x.Quantity);
+
+                            if (availableQty <= 0)
+                            {
+                                result = BadRequest(new
+                                {
+                                    message =
+                                        $"Pallet {pallet.PalletNo} has no stock remaining."
+                                });
+
+                                await transaction.RollbackAsync();
+                                return;
+                            }
+
+                            if (model.Quantity > availableQty)
+                            {
+                                result = BadRequest(new
+                                {
+                                    message =
+                                        $"Only {availableQty:0.###} quantity is available on pallet {pallet.PalletNo}."
+                                });
+
+                                await transaction.RollbackAsync();
+                                return;
+                            }
+
+                            // -------------------------------------------------
+                            // CREATE MATERIAL ISSUE
+                            // -------------------------------------------------
+                            var entity = new MaterialIssue
+                            {
+                                IssueNumber =
+                                    await GenerateIssueNumberAsync(),
+
+                                ItemId = model.ItemId,
+
+                                Quantity = model.Quantity,
+
+                                IssuedTo = model.IssuedTo.Trim(),
+
+                                IssuedBy = model.IssuedBy.Trim(),
+
+                                StoreLocation =
+                                    string.IsNullOrWhiteSpace(model.StoreLocation)
+                                        ? null
+                                        : model.StoreLocation.Trim(),
+
+                                PalletNo =
+                                    string.IsNullOrWhiteSpace(model.PalletNo)
+                                        ? pallet.PalletNo
+                                        : model.PalletNo.Trim(),
+
+                                GrnPalletId = model.GrnPalletId,
+
+                                GrnNumber =
+                                    string.IsNullOrWhiteSpace(model.GrnNumber)
+                                        ? null
+                                        : model.GrnNumber.Trim(),
+
+                                Remarks =
+                                    string.IsNullOrWhiteSpace(model.Remarks)
+                                        ? null
+                                        : model.Remarks.Trim(),
+
+                                IssueDate = DateTime.Now,
+
+                                CreatedDate = DateTime.Now
+                            };
+
+                            _context.MaterialIssues.Add(entity);
+
+                            // -------------------------------------------------
+                            // REDUCE ONLY THE ISSUED QUANTITY
+                            //
+                            // Example:
+                            // pallet stock = 20
+                            // issue = 5
+                            // remaining stock = 15
+                            // -------------------------------------------------
+                            decimal remainingToIssue = model.Quantity;
+
+                            foreach (var movement in movements)
+                            {
+                                if (remainingToIssue <= 0)
+                                    break;
+
+                                if (movement.Quantity <= remainingToIssue)
+                                {
+                                    remainingToIssue -= movement.Quantity;
+                                    _context.StoreMovements.Remove(movement);
+                                }
+                                else
+                                {
+                                    movement.Quantity -= remainingToIssue;
+                                    remainingToIssue = 0;
+                                }
+                            }
+
+                            if (remainingToIssue > 0)
+                            {
+                                result = BadRequest(new
+                                {
+                                    message =
+                                        "Unable to allocate the requested quantity from pallet stock."
+                                });
+
+                                await transaction.RollbackAsync();
+                                return;
+                            }
+
+                            await _context.SaveChangesAsync();
+                            await transaction.CommitAsync();
+
+                            result = Ok(new
+                            {
+                                id = entity.Id,
+                                issueNumber = entity.IssueNumber,
+                                issuedQuantity = entity.Quantity,
+                                palletNo = entity.PalletNo,
+                                grnPalletId = entity.GrnPalletId,
+                                remainingStock =
+                                    availableQty - model.Quantity,
+                                message = "Material issued successfully."
+                            });
+
+                            return;
+                        }
+
+                        // =================================================
+                        // GENERIC ISSUE WITHOUT PALLET
+                        // =================================================
+                        var genericEntity = new MaterialIssue
+                        {
+                            IssueNumber =
+                                await GenerateIssueNumberAsync(),
+
+                            ItemId = model.ItemId,
+
+                            Quantity = model.Quantity,
+
+                            IssuedTo = model.IssuedTo.Trim(),
+
+                            IssuedBy = model.IssuedBy.Trim(),
+
+                            StoreLocation =
+                                string.IsNullOrWhiteSpace(model.StoreLocation)
+                                    ? null
+                                    : model.StoreLocation.Trim(),
+
+                            PalletNo =
+                                string.IsNullOrWhiteSpace(model.PalletNo)
+                                    ? null
+                                    : model.PalletNo.Trim(),
+
+                            GrnNumber =
+                                string.IsNullOrWhiteSpace(model.GrnNumber)
+                                    ? null
+                                    : model.GrnNumber.Trim(),
+
+                            Remarks =
+                                string.IsNullOrWhiteSpace(model.Remarks)
+                                    ? null
+                                    : model.Remarks.Trim(),
+
+                            IssueDate = DateTime.Now,
+
+                            CreatedDate = DateTime.Now
+                        };
+
+                        _context.MaterialIssues.Add(genericEntity);
+
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        result = Ok(new
+                        {
+                            id = genericEntity.Id,
+                            issueNumber = genericEntity.IssueNumber,
+                            issuedQuantity = genericEntity.Quantity,
+                            message = "Material issued successfully."
                         });
                     }
-                }
-
-                var entity = new MaterialIssue
-                {
-                    IssueNumber = await GenerateIssueNumberAsync(),
-                    ItemId = model.ItemId,
-                    Quantity = model.Quantity,
-                    IssuedTo = model.IssuedTo.Trim(),
-                    IssuedBy = model.IssuedBy.Trim(),
-                    StoreLocation = model.StoreLocation?.Trim(),
-                    PalletNo = model.PalletNo?.Trim(),
-                    GrnPalletId = model.GrnPalletId,
-                    GrnNumber = model.GrnNumber?.Trim(),
-                    Remarks = model.Remarks?.Trim(),
-                    IssueDate = DateTime.Now,
-                    CreatedDate = DateTime.Now
-                };
-
-                _context.MaterialIssues.Add(entity);
-                await _context.SaveChangesAsync();
-
-                // -----------------------------------------------------
-                // FREE UP THE RACK SLOT(S) THIS PALLET WAS OCCUPYING
-                // -----------------------------------------------------
-                if (entity.GrnPalletId.HasValue)
-                {
-                    var movements = await _context.StoreMovements
-                        .Where(x => x.GrnPalletId == entity.GrnPalletId.Value)
-                        .ToListAsync();
-
-                    if (movements.Any())
+                    catch
                     {
-                        _context.StoreMovements.RemoveRange(movements);
-                        await _context.SaveChangesAsync();
+                        // Important: allow the execution strategy to
+                        // catch/retry transient SQL exceptions.
+                        throw;
                     }
-                }
+                });
 
-                return Ok(new
+                return result ?? StatusCode(500, new
                 {
-                    entity.Id,
-                    entity.IssueNumber
+                    message = "Material Issue operation did not return a result."
+                });
+            }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                var detail = ex.InnerException?.Message ?? ex.Message;
+
+                return Conflict(new
+                {
+                    message =
+                        $"Stock was changed by another transaction. Please sync again. {detail}"
                 });
             }
             catch (Exception ex)
             {
-                var detail =
-                    ex.InnerException?.Message ??
-                    ex.Message;
+                var detail = ex.InnerException?.Message ?? ex.Message;
 
                 return StatusCode(500, new
                 {
-                    message =
-                        $"Save failed: {detail}"
+                    message = $"Save failed: {detail}"
                 });
             }
         }
@@ -443,26 +554,23 @@ namespace DFN_BMS.Controllers
         private async Task<string> GenerateIssueNumberAsync()
         {
             var year = DateTime.Now.Year;
-
             var prefix = $"MI-{year}-";
 
             var last = await _context.MaterialIssues
                 .Where(x =>
+                    x.IssueNumber != null &&
                     x.IssueNumber.StartsWith(prefix))
                 .OrderByDescending(x => x.Id)
                 .FirstOrDefaultAsync();
 
-            int nextSeq = 1;
+            var nextSeq = 1;
 
             if (last != null)
             {
                 var numericPart =
-                    last.IssueNumber
-                        .Substring(prefix.Length);
+                    last.IssueNumber.Substring(prefix.Length);
 
-                if (int.TryParse(
-                    numericPart,
-                    out int lastSeq))
+                if (int.TryParse(numericPart, out var lastSeq))
                 {
                     nextSeq = lastSeq + 1;
                 }
@@ -472,33 +580,54 @@ namespace DFN_BMS.Controllers
         }
 
         // =========================================================
-        // DELETE
+        // DELETE MATERIAL ISSUE
+        // =========================================================
+        //
+        // NOTE:
+        // Delete removes only the issue history record.
+        // It does NOT automatically put the quantity back into
+        // StoreMovements because the original StoreMovement row(s)
+        // may have been partially consumed.
+        //
+        // If you want "Delete = Restore Stock", that should be
+        // implemented as a separate controlled stock-reversal action.
         // =========================================================
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
-            var entity =
-                await _context.MaterialIssues
-                    .FindAsync(id);
-
-            if (entity == null)
+            try
             {
-                return NotFound(new
+                // A single DELETE statement is already atomic.
+                // Avoid BeginTransactionAsync here because the DbContext
+                // uses a retrying SQL Server execution strategy.
+                var entity = await _context.MaterialIssues
+                    .FirstOrDefaultAsync(x => x.Id == id);
+
+                if (entity == null)
                 {
-                    message =
-                        "Material Issue record not found"
+                    return NotFound(new
+                    {
+                        message = "Material Issue record not found."
+                    });
+                }
+
+                _context.MaterialIssues.Remove(entity);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = "Deleted Successfully"
                 });
             }
-
-            _context.MaterialIssues.Remove(entity);
-
-            await _context.SaveChangesAsync();
-
-            return Ok(new
+            catch (Exception ex)
             {
-                message =
-                    "Deleted Successfully"
-            });
+                var detail = ex.InnerException?.Message ?? ex.Message
+                return StatusCode(500, new
+                {
+                    message = $"Delete failed: {detail}"
+                });
+            }
         }
     }
 }

@@ -61,14 +61,13 @@ namespace DFN_BMS.Controllers
                                     .ThenInclude(lm => lm.StoreMaster)
                     .ToListAsync();
 
-                var issuedGrnPalletIds = await _context.MaterialIssues
-     .Where(x => x.GrnPalletId.HasValue)
-     .Select(x => x.GrnPalletId.Value)
-     .ToListAsync();
-
-                var issuedSet = new HashSet<int>(issuedGrnPalletIds);
+                // Do NOT exclude a pallet merely because it has a
+                // MaterialIssue record. A pallet can be partially issued
+                // multiple times. StoreMovements.Quantity is the physical
+                // quantity still present in the store.
+                //
                 // Group by pallet so Front+Rear (or any multi-row stuffing)
-                // collapses into a single entry per pallet.
+                // collapses into one entry per pallet.
                 var grouped = movements
                     .GroupBy(m => m.GrnPalletId)
                     .Select(g =>
@@ -112,9 +111,8 @@ namespace DFN_BMS.Controllers
                                 : "SAMPLE"
                         };
                     })
-                       // Exclude anything already issued — real, server-side
-                       // duplicate prevention.
-                       .Where(r => !issuedSet.Contains(r.id!.Value))
+                    // Only pallets with positive physical stock are available.
+                    .Where(r => r.quantity > 0)
                     // TRUE FIFO: earliest movement first.
                     .OrderBy(r => r.movementDate)
                     .ToList();
