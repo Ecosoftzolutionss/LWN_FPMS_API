@@ -42,13 +42,18 @@ namespace DFN_BMS.Models
         [MaxLength(100)]
         public string EmailId { get; set; }
 
-        [Required]
-        [MaxLength(15)]
+        // ---------------------------------------------------------
+        // GST No
+        //
+        // External Customer -> Actual GSTIN
+        // Internal Customer -> NOTPROVIDED
+        // ---------------------------------------------------------
+        [MaxLength(20)]
         [RegularExpression(
-            @"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$",
+            @"^([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}|NOTPROVIDED)$",
             ErrorMessage = "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)"
         )]
-        public string GstNo { get; set; }
+        public string? GstNo { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 

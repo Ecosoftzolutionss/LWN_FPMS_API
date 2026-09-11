@@ -15,173 +15,559 @@ namespace DFN_BMS.Controllers
     {
         private readonly AppDbContext _context;
 
-        // 2 digits (state code) + 5 letters (PAN) + 4 digits (PAN) + 1 letter (PAN)
-        // + 1 alphanumeric (entity code) + literal 'Z' + 1 alphanumeric (checksum)
         private static readonly Regex GstRegex =
-            new Regex(@"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$");
-        private static readonly Regex NameRegex = new Regex(@"^[A-Za-z0-9_ ]+$");
+            new Regex(
+                @"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
+            );
+
+        private static readonly Regex NameRegex =
+            new Regex(@"^[A-Za-z0-9_ ]+$");
 
         public CustomerMasterController(AppDbContext context)
         {
             _context = context;
         }
 
-        // GET: api/CustomerMaster
+        // =========================================================
+        // GET ALL
+        // =========================================================
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
             var list = await _context.CustomerMasters
+                .Include(x => x.CustomerGroup)
                 .OrderByDescending(x => x.Id)
                 .ToListAsync();
 
             return Ok(list);
         }
 
-        // GET: api/CustomerMaster/5
+        // =========================================================
+        // GET BY ID
+        // =========================================================
         [HttpGet("{id}")]
         public async Task<IActionResult> GetById(int id)
         {
-            var item = await _context.CustomerMasters.FindAsync(id);
+            var item = await _context.CustomerMasters
+                .Include(x => x.CustomerGroup)
+                .FirstOrDefaultAsync(x => x.Id == id);
 
             if (item == null)
-                return NotFound(new { message = "Customer not found" });
+                return NotFound(new
+                {
+                    message = "Customer not found"
+                });
 
             return Ok(item);
         }
 
-        // POST: api/CustomerMaster
+        // =========================================================
+        // CREATE
+        // =========================================================
         [HttpPost]
-        public async Task<IActionResult> Create([FromBody] CustomerMaster model)
+        public async Task<IActionResult> Create(
+            [FromBody] CustomerMaster model)
         {
+            // -----------------------------------------------------
+            // Basic validation
+            // -----------------------------------------------------
             if (string.IsNullOrWhiteSpace(model.CustomerCode) ||
                 string.IsNullOrWhiteSpace(model.CustomerName) ||
                 string.IsNullOrWhiteSpace(model.CustomerDivision) ||
                 string.IsNullOrWhiteSpace(model.MobileNumber) ||
-                string.IsNullOrWhiteSpace(model.EmailId) ||
-                string.IsNullOrWhiteSpace(model.GstNo))
+                string.IsNullOrWhiteSpace(model.EmailId))
             {
-                return BadRequest(new { message = "Please fill all required fields" });
+                return BadRequest(new
+                {
+                    message = "Please fill all required fields"
+                });
             }
 
-            var gstNo = model.GstNo.Trim().ToUpper();
+            // -----------------------------------------------------
+            // Customer Group
+            // CustomerDivision currently contains:
+            // Internal / External
+            // -----------------------------------------------------
+            var customerGroupType =
+                model.CustomerDivision.Trim();
 
-            if (!NameRegex.IsMatch(model.CustomerName.Trim()))
-                return BadRequest(new { message = "Customer Name: only letters, numbers, underscore and spaces are allowed (e.g. Test_233)" });
+            var customerGroup = await _context.CustomerGroupMasters
+                .FirstOrDefaultAsync(x =>
+                    x.CustomerGroupType.ToLower() ==
+                    customerGroupType.ToLower());
 
-            if (!GstRegex.IsMatch(gstNo))
-                return BadRequest(new { message = "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)" });
+            if (customerGroup == null)
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid Customer Group"
+                });
+            }
+
+            bool isExternal =
+                customerGroup.CustomerGroupType.Equals(
+                    "External",
+                    StringComparison.OrdinalIgnoreCase);
+
+            bool isInternal =
+                customerGroup.CustomerGroupType.Equals(
+                    "Internal",
+                    StringComparison.OrdinalIgnoreCase);
+
+            if (!isExternal && !isInternal)
+            {
+                return BadRequest(new
+                {
+                    message = "Customer Group must be Internal or External"
+                });
+            }
+
+            // -----------------------------------------------------
+            // Customer Name
+            // -----------------------------------------------------
+            var customerName =
+                model.CustomerName.Trim();
+
+            if (!NameRegex.IsMatch(customerName))
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Customer Name: only letters, numbers, underscore and spaces are allowed (e.g. Test_233)"
+                });
+            }
+
+            // -----------------------------------------------------
+            // Mobile
+            // -----------------------------------------------------
+            var mobileNumber =
+                model.MobileNumber.Trim();
+
+            if (!Regex.IsMatch(mobileNumber, @"^[0-9]{10}$"))
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Mobile Number must be exactly 10 digits"
+                });
+            }
+
+            // -----------------------------------------------------
+            // Email
+            // -----------------------------------------------------
+            var email =
+                model.EmailId.Trim();
+
+            if (!Regex.IsMatch(
+                    email,
+                    @"^[^\s@]+@[^\s@]+\.[^\s@]+$"))
+            {
+                return BadRequest(new
+                {
+                    message = "Enter a valid email address"
+                });
+            }
+
+            // -----------------------------------------------------
+            // GST VALIDATION
+            //
+            // External -> GST required
+            // Internal -> NOTPROVIDED
+            // -----------------------------------------------------
+            string gstNo;
+
+            if (isExternal)
+            {
+                if (string.IsNullOrWhiteSpace(model.GstNo))
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            "GST No is required for External customers"
+                    });
+                }
+
+                gstNo =
+                    model.GstNo.Trim().ToUpper();
+
+                if (!GstRegex.IsMatch(gstNo))
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)"
+                    });
+                }
+            }
+            else
+            {
+                // Internal customer
+                gstNo = "NOTPROVIDED";
+            }
+
+            // -----------------------------------------------------
+            // Customer ID duplicate
+            // -----------------------------------------------------
+            var code =
+                model.CustomerCode.Trim();
 
             var codeExists = await _context.CustomerMasters
-                .AnyAsync(x => x.CustomerCode.ToLower() == model.CustomerCode.Trim().ToLower());
+                .AnyAsync(x =>
+                    x.CustomerCode.ToLower() ==
+                    code.ToLower());
 
             if (codeExists)
-                return BadRequest(new { message = "Customer ID already exists" });
+            {
+                return BadRequest(new
+                {
+                    message = "Customer ID already exists"
+                });
+            }
 
+            // -----------------------------------------------------
+            // Customer Name duplicate
+            // -----------------------------------------------------
             var nameExists = await _context.CustomerMasters
-                .AnyAsync(x => x.CustomerName.ToLower() == model.CustomerName.Trim().ToLower());
+                .AnyAsync(x =>
+                    x.CustomerName.ToLower() ==
+                    customerName.ToLower());
 
             if (nameExists)
-                return BadRequest(new { message = "Customer Name already exists" });
+            {
+                return BadRequest(new
+                {
+                    message = "Customer Name already exists"
+                });
+            }
 
+            // -----------------------------------------------------
+            // Email duplicate
+            // -----------------------------------------------------
             var emailExists = await _context.CustomerMasters
-                .AnyAsync(x => x.EmailId.ToLower() == model.EmailId.Trim().ToLower());
+                .AnyAsync(x =>
+                    x.EmailId.ToLower() ==
+                    email.ToLower());
 
             if (emailExists)
-                return BadRequest(new { message = "Email ID already exists" });
+            {
+                return BadRequest(new
+                {
+                    message = "Email ID already exists"
+                });
+            }
 
-            var gstExists = await _context.CustomerMasters
-                .AnyAsync(x => x.GstNo.ToLower() == gstNo.ToLower());
+            // -----------------------------------------------------
+            // GST duplicate
+            //
+            // Only check actual GSTIN.
+            // Don't check NOTPROVIDED.
+            // -----------------------------------------------------
+            if (isExternal)
+            {
+                var gstExists = await _context.CustomerMasters
+                    .AnyAsync(x =>
+                        x.GstNo.ToLower() ==
+                        gstNo.ToLower());
 
-            if (gstExists)
-                return BadRequest(new { message = "GST No already exists" });
+                if (gstExists)
+                {
+                    return BadRequest(new
+                    {
+                        message = "GST No already exists"
+                    });
+                }
+            }
 
+            // -----------------------------------------------------
+            // CREATE ENTITY
+            // -----------------------------------------------------
             var entity = new CustomerMaster
             {
-                CustomerCode = model.CustomerCode.Trim(),
-                CustomerName = model.CustomerName.Trim(),
-                CustomerDivision = model.CustomerDivision.Trim(),
-                MobileNumber = model.MobileNumber.Trim(),
-                EmailId = model.EmailId.Trim(),
+                CustomerCode = code,
+                CustomerName = customerName,
+                CustomerDivision =
+                    customerGroup.CustomerGroupType,
+                CustomerGroupId = customerGroup.Id,
+                MobileNumber = mobileNumber,
+                EmailId = email,
                 GstNo = gstNo,
                 CreatedDate = DateTime.Now
             };
 
             _context.CustomerMasters.Add(entity);
+
             await _context.SaveChangesAsync();
 
             return Ok(entity);
         }
 
-        // PUT: api/CustomerMaster/5
+        // =========================================================
+        // UPDATE
+        // =========================================================
         [HttpPut("{id}")]
-        public async Task<IActionResult> Update(int id, [FromBody] CustomerMaster model)
+        public async Task<IActionResult> Update(
+            int id,
+            [FromBody] CustomerMaster model)
         {
-            var entity = await _context.CustomerMasters.FindAsync(id);
+            var entity = await _context.CustomerMasters
+                .FindAsync(id);
 
             if (entity == null)
-                return NotFound(new { message = "Customer not found" });
+            {
+                return NotFound(new
+                {
+                    message = "Customer not found"
+                });
+            }
 
+            // -----------------------------------------------------
+            // Basic validation
+            // -----------------------------------------------------
             if (string.IsNullOrWhiteSpace(model.CustomerName) ||
                 string.IsNullOrWhiteSpace(model.CustomerDivision) ||
                 string.IsNullOrWhiteSpace(model.MobileNumber) ||
-                string.IsNullOrWhiteSpace(model.EmailId) ||
-                string.IsNullOrWhiteSpace(model.GstNo))
+                string.IsNullOrWhiteSpace(model.EmailId))
             {
-                return BadRequest(new { message = "Please fill all required fields" });
+                return BadRequest(new
+                {
+                    message = "Please fill all required fields"
+                });
             }
 
-            var gstNo = model.GstNo.Trim().ToUpper();
+            // -----------------------------------------------------
+            // Find Customer Group
+            // -----------------------------------------------------
+            var customerGroupType =
+                model.CustomerDivision.Trim();
 
-            if (!NameRegex.IsMatch(model.CustomerName.Trim()))
-                return BadRequest(new { message = "Customer Name: only letters, numbers, underscore and spaces are allowed (e.g. Test_233)" });
+            var customerGroup =
+                await _context.CustomerGroupMasters
+                    .FirstOrDefaultAsync(x =>
+                        x.CustomerGroupType.ToLower() ==
+                        customerGroupType.ToLower());
 
-            if (!GstRegex.IsMatch(gstNo))
-                return BadRequest(new { message = "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)" });
+            if (customerGroup == null)
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid Customer Group"
+                });
+            }
 
-            var nameExists = await _context.CustomerMasters
-                .AnyAsync(x => x.CustomerName.ToLower() == model.CustomerName.Trim().ToLower() && x.Id != id);
+            bool isExternal =
+                customerGroup.CustomerGroupType.Equals(
+                    "External",
+                    StringComparison.OrdinalIgnoreCase);
+
+            bool isInternal =
+                customerGroup.CustomerGroupType.Equals(
+                    "Internal",
+                    StringComparison.OrdinalIgnoreCase);
+
+            if (!isExternal && !isInternal)
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Customer Group must be Internal or External"
+                });
+            }
+
+            // -----------------------------------------------------
+            // Customer Name
+            // -----------------------------------------------------
+            var customerName =
+                model.CustomerName.Trim();
+
+            if (!NameRegex.IsMatch(customerName))
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Customer Name: only letters, numbers, underscore and spaces are allowed (e.g. Test_233)"
+                });
+            }
+
+            // -----------------------------------------------------
+            // Mobile
+            // -----------------------------------------------------
+            var mobileNumber =
+                model.MobileNumber.Trim();
+
+            if (!Regex.IsMatch(
+                    mobileNumber,
+                    @"^[0-9]{10}$"))
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Mobile Number must be exactly 10 digits"
+                });
+            }
+
+            // -----------------------------------------------------
+            // Email
+            // -----------------------------------------------------
+            var email =
+                model.EmailId.Trim();
+
+            if (!Regex.IsMatch(
+                    email,
+                    @"^[^\s@]+@[^\s@]+\.[^\s@]+$"))
+            {
+                return BadRequest(new
+                {
+                    message = "Enter a valid email address"
+                });
+            }
+
+            // -----------------------------------------------------
+            // GST
+            // -----------------------------------------------------
+            string gstNo;
+
+            if (isExternal)
+            {
+                if (string.IsNullOrWhiteSpace(model.GstNo))
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            "GST No is required for External customers"
+                    });
+                }
+
+                gstNo =
+                    model.GstNo.Trim().ToUpper();
+
+                if (!GstRegex.IsMatch(gstNo))
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)"
+                    });
+                }
+            }
+            else
+            {
+                gstNo = "NOTPROVIDED";
+            }
+
+            // -----------------------------------------------------
+            // Name duplicate
+            // -----------------------------------------------------
+            var nameExists =
+                await _context.CustomerMasters
+                    .AnyAsync(x =>
+                        x.CustomerName.ToLower() ==
+                        customerName.ToLower() &&
+                        x.Id != id);
 
             if (nameExists)
-                return BadRequest(new { message = "Customer Name already exists" });
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Customer Name already exists"
+                });
+            }
 
-            var emailExists = await _context.CustomerMasters
-                .AnyAsync(x => x.EmailId.ToLower() == model.EmailId.Trim().ToLower() && x.Id != id);
+            // -----------------------------------------------------
+            // Email duplicate
+            // -----------------------------------------------------
+            var emailExists =
+                await _context.CustomerMasters
+                    .AnyAsync(x =>
+                        x.EmailId.ToLower() ==
+                        email.ToLower() &&
+                        x.Id != id);
 
             if (emailExists)
-                return BadRequest(new { message = "Email ID already exists" });
+            {
+                return BadRequest(new
+                {
+                    message = "Email ID already exists"
+                });
+            }
 
-            var gstExists = await _context.CustomerMasters
-                .AnyAsync(x => x.GstNo.ToLower() == gstNo.ToLower() && x.Id != id);
+            // -----------------------------------------------------
+            // GST duplicate
+            // -----------------------------------------------------
+            if (isExternal)
+            {
+                var gstExists =
+                    await _context.CustomerMasters
+                        .AnyAsync(x =>
+                            x.GstNo.ToLower() ==
+                            gstNo.ToLower() &&
+                            x.Id != id);
 
-            if (gstExists)
-                return BadRequest(new { message = "GST No already exists" });
+                if (gstExists)
+                {
+                    return BadRequest(new
+                    {
+                        message = "GST No already exists"
+                    });
+                }
+            }
 
-            entity.CustomerName = model.CustomerName.Trim();
-            entity.CustomerDivision = model.CustomerDivision.Trim();
-            entity.MobileNumber = model.MobileNumber.Trim();
-            entity.EmailId = model.EmailId.Trim();
-            entity.GstNo = gstNo;
-            entity.ModifiedDate = DateTime.Now;
-            // Note: CustomerCode is intentionally never changed on update.
+            // -----------------------------------------------------
+            // UPDATE
+            // -----------------------------------------------------
+            entity.CustomerName = customerName;
+
+            entity.CustomerDivision =
+                customerGroup.CustomerGroupType;
+
+            entity.CustomerGroupId =
+                customerGroup.Id;
+
+            entity.MobileNumber =
+                mobileNumber;
+
+            entity.EmailId =
+                email;
+
+            entity.GstNo =
+                gstNo;
+
+            entity.ModifiedDate =
+                DateTime.Now;
+
+            // CustomerCode intentionally not changed
 
             await _context.SaveChangesAsync();
 
             return Ok(entity);
         }
 
-        // DELETE: api/CustomerMaster/5
+        // =========================================================
+        // DELETE
+        // =========================================================
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
-            var entity = await _context.CustomerMasters.FindAsync(id);
+            var entity =
+                await _context.CustomerMasters
+                    .FindAsync(id);
 
             if (entity == null)
-                return NotFound(new { message = "Customer not found" });
+            {
+                return NotFound(new
+                {
+                    message = "Customer not found"
+                });
+            }
 
             _context.CustomerMasters.Remove(entity);
+
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = "Deleted Successfully" });
+            return Ok(new
+            {
+                message = "Deleted Successfully"
+            });
         }
     }
 }

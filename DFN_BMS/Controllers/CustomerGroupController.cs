@@ -13,7 +13,7 @@ namespace DFN_BMS.Controllers
     public class CustomerGroupController : ControllerBase
     {
         private readonly AppDbContext _context;
-
+        
         public CustomerGroupController(AppDbContext context)
         {
             _context = context;
