@@ -36,5 +36,7 @@ namespace DFN_BMS.DB
         public DbSet<MaterialIssue> MaterialIssues { get; set; }
         public DbSet<UomMaster> UomMasters { get; set; }
         public DbSet<StoreVerification> StoreVerification { get; set; }
+
+        public DbSet<PalletIssueLock> PalletIssueLocks { get; set; }
     }
 }
