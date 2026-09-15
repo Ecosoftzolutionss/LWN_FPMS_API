@@ -19,6 +19,9 @@ namespace DFN_BMS.Controllers
             _context = context;
         }
 
+
+
+
         // =========================================================
         // GET ALL - ONE ROW PER GRN
         // =========================================================
@@ -207,6 +210,23 @@ namespace DFN_BMS.Controllers
         //     Issue 3     -> remaining 7
         //     Issue 4     -> remaining 3
         //     Issue 3     -> remaining 0
+        //
+        // IDEMPOTENCY:
+        // - model.IdempotencyKey is generated ONCE on the client when a
+        //   pending issue is first queued (device id + pallet id +
+        //   timestamp) and stays attached to that offline record for
+        //   its whole life. If Data Sync retries the same record
+        //   (e.g. the upload succeeded but the response never reached
+        //   the client), the SAME key arrives again.
+        // - We check for an existing row with that key BEFORE opening
+        //   the stock-mutating transaction. If found, we return success
+        //   again without touching StoreMovements a second time.
+        // - Older/queued records with no key (pre-upgrade clients, or
+        //   the generic/no-pallet path if it's ever used without a
+        //   key) simply skip this check and fall through to the
+        //   normal flow — the StoreMovements quantity check further
+        //   down still protects against real over-issuing in that
+        //   case, just without single-record replay protection.
         // =========================================================
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] MaterialIssue model)
@@ -246,6 +266,35 @@ namespace DFN_BMS.Controllers
                 });
             }
 
+            // ---------------------------------------------------------
+            // IDEMPOTENCY CHECK — outside the transaction, before any
+            // stock mutation is even considered. AsNoTracking because
+            // we only need to read; nothing here is updated.
+            // ---------------------------------------------------------
+            var idempotencyKey = string.IsNullOrWhiteSpace(model.IdempotencyKey)
+                ? null
+                : model.IdempotencyKey.Trim();
+
+            if (idempotencyKey != null)
+            {
+                var existing = await _context.MaterialIssues
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.IdempotencyKey == idempotencyKey);
+
+                if (existing != null)
+                {
+                    return Ok(new
+                    {
+                        id = existing.Id,
+                        issueNumber = existing.IssueNumber,
+                        issuedQuantity = existing.Quantity,
+                        palletNo = existing.PalletNo,
+                        grnPalletId = existing.GrnPalletId,
+                        message = "Material issue already recorded (idempotent replay)."
+                    });
+                }
+            }
+
             // =========================================================
             // IMPORTANT
             // =========================================================
@@ -276,6 +325,44 @@ namespace DFN_BMS.Controllers
 
                     try
                     {
+                        // -------------------------------------------------
+                        // SECOND, RACE-SAFE IDEMPOTENCY CHECK
+                        //
+                        // The AsNoTracking check above runs before the
+                        // transaction opens, so two near-simultaneous
+                        // retries of the SAME record (rare, but possible
+                        // if a sync is somehow triggered twice in quick
+                        // succession) could both pass it. Re-checking
+                        // here, inside the Serializable transaction,
+                        // closes that gap: the unique index on
+                        // IdempotencyKey means the second SaveChangesAsync
+                        // below will throw a uniqueness violation if a
+                        // true race occurs, but checking again here keeps
+                        // the common case cheap and avoids surfacing that
+                        // as a scary 500 error to the client.
+                        // -------------------------------------------------
+                        if (idempotencyKey != null)
+                        {
+                            var existingInTx = await _context.MaterialIssues
+                                .FirstOrDefaultAsync(x => x.IdempotencyKey == idempotencyKey);
+
+                            if (existingInTx != null)
+                            {
+                                result = Ok(new
+                                {
+                                    id = existingInTx.Id,
+                                    issueNumber = existingInTx.IssueNumber,
+                                    issuedQuantity = existingInTx.Quantity,
+                                    palletNo = existingInTx.PalletNo,
+                                    grnPalletId = existingInTx.GrnPalletId,
+                                    message = "Material issue already recorded (idempotent replay)."
+                                });
+
+                                await transaction.RollbackAsync();
+                                return;
+                            }
+                        }
+
                         // =================================================
                         // PALLET-BASED ISSUE
                         // =================================================
@@ -396,6 +483,13 @@ namespace DFN_BMS.Controllers
                                         ? null
                                         : model.Remarks.Trim(),
 
+                                IdempotencyKey = idempotencyKey,
+
+                                DeviceId =
+                                    string.IsNullOrWhiteSpace(model.DeviceId)
+                                        ? null
+                                        : model.DeviceId.Trim(),
+
                                 IssueDate = DateTime.Now,
 
                                 CreatedDate = DateTime.Now
@@ -496,6 +590,13 @@ namespace DFN_BMS.Controllers
                                     ? null
                                     : model.Remarks.Trim(),
 
+                            IdempotencyKey = idempotencyKey,
+
+                            DeviceId =
+                                string.IsNullOrWhiteSpace(model.DeviceId)
+                                    ? null
+                                    : model.DeviceId.Trim(),
+
                             IssueDate = DateTime.Now,
 
                             CreatedDate = DateTime.Now
@@ -516,8 +617,6 @@ namespace DFN_BMS.Controllers
                     }
                     catch
                     {
-                        // Important: allow the execution strategy to
-                        // catch/retry transient SQL exceptions.
                         throw;
                     }
                 });
@@ -526,6 +625,34 @@ namespace DFN_BMS.Controllers
                 {
                     message = "Material Issue operation did not return a result."
                 });
+            }
+            catch (DbUpdateException ex) when (
+                idempotencyKey != null &&
+                (ex.InnerException?.Message?.Contains("UX_MaterialIssues_IdempotencyKey") == true))
+            {
+                // A true concurrent-retry race slipped past both earlier
+                // checks and hit the unique index. Look up the row the
+                // other request just committed and return it as a
+                // successful replay instead of surfacing a raw DB error.
+                var winner = await _context.MaterialIssues
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.IdempotencyKey == idempotencyKey);
+
+                if (winner != null)
+                {
+                    return Ok(new
+                    {
+                        id = winner.Id,
+                        issueNumber = winner.IssueNumber,
+                        issuedQuantity = winner.Quantity,
+                        palletNo = winner.PalletNo,
+                        grnPalletId = winner.GrnPalletId,
+                        message = "Material issue already recorded (idempotent replay)."
+                    });
+                }
+
+                var detail = ex.InnerException?.Message ?? ex.Message;
+                return StatusCode(500, new { message = $"Save failed: {detail}" });
             }
             catch (DbUpdateConcurrencyException ex)
             {
@@ -548,9 +675,7 @@ namespace DFN_BMS.Controllers
             }
         }
 
-        // =========================================================
-        // GENERATE ISSUE NUMBER
-        // =========================================================
+
         private async Task<string> GenerateIssueNumberAsync()
         {
             var year = DateTime.Now.Year;
@@ -579,27 +704,12 @@ namespace DFN_BMS.Controllers
             return $"{prefix}{nextSeq:D4}";
         }
 
-        // =========================================================
-        // DELETE MATERIAL ISSUE
-        // =========================================================
-        //
-        // NOTE:
-        // Delete removes only the issue history record.
-        // It does NOT automatically put the quantity back into
-        // StoreMovements because the original StoreMovement row(s)
-        // may have been partially consumed.
-        //
-        // If you want "Delete = Restore Stock", that should be
-        // implemented as a separate controlled stock-reversal action.
-        // =========================================================
+
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
             try
             {
-                // A single DELETE statement is already atomic.
-                // Avoid BeginTransactionAsync here because the DbContext
-                // uses a retrying SQL Server execution strategy.
                 var entity = await _context.MaterialIssues
                     .FirstOrDefaultAsync(x => x.Id == id);
 
@@ -622,7 +732,7 @@ namespace DFN_BMS.Controllers
             }
             catch (Exception ex)
             {
-                var detail = ex.InnerException?.Message ?? ex.Message
+                var detail = ex.InnerException?.Message ?? ex.Message;
                 return StatusCode(500, new
                 {
                     message = $"Delete failed: {detail}"

@@ -19,7 +19,7 @@ namespace DFN_BMS.Models
         [Required]
         public int ItemId { get; set; }   // FK -> ItemMaster.Id (Part Number)
 
-    
+
         public ItemMaster? Item { get; set; }
 
         [Required]
@@ -51,5 +51,8 @@ namespace DFN_BMS.Models
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 
         public int? GrnPalletId { get; set; }
+
+        public string? IdempotencyKey { get; set; }
+        public string? DeviceId { get; set; }
     }
 }
