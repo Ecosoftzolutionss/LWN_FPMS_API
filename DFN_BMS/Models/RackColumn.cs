@@ -6,7 +6,6 @@ using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
 
 namespace DFN_BMS.Models
 {
-    // A column within a Rack, e.g. "A1", "B1".
     [Table("RACK_COLUMN")]
     public class RackColumn
     {
@@ -14,14 +13,13 @@ namespace DFN_BMS.Models
         public int Id { get; set; }
 
         [Required]
-        public int LocationRackId { get; set; }   // FK -> LocationRack.Id
+        public int LocationRackId { get; set; }
 
-    
         public LocationRack? Rack { get; set; }
 
         [Required]
         [MaxLength(10)]
-        public string ColumnNo { get; set; }   // e.g. "A1", "B1"
+        public string ColumnNo { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 

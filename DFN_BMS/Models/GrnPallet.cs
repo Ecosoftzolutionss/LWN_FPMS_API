@@ -24,7 +24,7 @@ namespace DFN_BMS.Models
 
         [Required]
         [MaxLength(20)]
-        public string PalletNo { get; set; }   // e.g. P001, P002
+        public string? PalletNo { get; set; }   // e.g. P001, P002
 
         [Required]
         [Column(TypeName = "decimal(18,3)")]

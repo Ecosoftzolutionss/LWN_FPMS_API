@@ -8,8 +8,6 @@ using DFN_BMS.Models;
 
 namespace DFN_BMS.Controllers
 {
-    // Store/Location CRUD only. Rack/Column/Row management lives in
-    // LocationRackController (api/LocationRack/...).
     [ApiController]
     [Route("api/[controller]")]
     public class LocationMasterController : ControllerBase
@@ -21,7 +19,6 @@ namespace DFN_BMS.Controllers
             _context = context;
         }
 
-        // GET: api/LocationMaster
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
@@ -45,7 +42,6 @@ namespace DFN_BMS.Controllers
             return Ok(list);
         }
 
-        // GET: api/LocationMaster/5
         [HttpGet("{id}")]
         public async Task<IActionResult> GetById(int id)
         {
@@ -70,8 +66,6 @@ namespace DFN_BMS.Controllers
             return Ok(store);
         }
 
-        // GET: api/LocationMaster/next-code
-        // Preview only — real value is (re)generated inside Create().
         [HttpGet("next-code")]
         public async Task<IActionResult> GetNextCode()
         {
@@ -96,7 +90,6 @@ namespace DFN_BMS.Controllers
             return $"ST{nextSeq:D6}";
         }
 
-        // POST: api/LocationMaster
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] LocationMaster model)
         {
@@ -120,7 +113,6 @@ namespace DFN_BMS.Controllers
             return Ok(entity);
         }
 
-        // PUT: api/LocationMaster/5
         [HttpPut("{id}")]
         public async Task<IActionResult> Update(int id, [FromBody] LocationMaster model)
         {
@@ -138,15 +130,12 @@ namespace DFN_BMS.Controllers
 
             entity.StoreMasterId = model.StoreMasterId;
             entity.ModifiedDate = DateTime.Now;
-            // Note: StoreCode is intentionally never changed on update.
 
             await _context.SaveChangesAsync();
 
             return Ok(entity);
         }
 
-        // DELETE: api/LocationMaster/5
-        // Cascades to delete this store's Racks/Columns/Rows too.
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {

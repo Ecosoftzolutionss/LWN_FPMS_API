@@ -15,7 +15,6 @@ namespace DFN_BMS.Models
         [Required]
         [MaxLength(30)]
         public string SupplierCode { get; set; } = string.Empty;
-        // Manually entered Supplier ID
 
         [Required]
         [MaxLength(150)]
@@ -24,25 +23,22 @@ namespace DFN_BMS.Models
         [Required]
         public int SupplierGroupId { get; set; }
 
-        // Navigation property
         [ForeignKey(nameof(SupplierGroupId))]
         public SupplierGroupMaster? SupplierGroup { get; set; }
 
-        [Required]
+        // Optional fields
         [MaxLength(100)]
         [EmailAddress(ErrorMessage = "Enter a valid email address")]
-        public string Email { get; set; } = string.Empty;
+        public string? Email { get; set; }
 
-        [Required]
         [MaxLength(10)]
         [RegularExpression(
             @"^[0-9]{10}$",
             ErrorMessage = "Contact Number must be exactly 10 digits")]
-        public string ContactNumber { get; set; } = string.Empty;
+        public string? ContactNumber { get; set; }
 
-        [Required]
         [MaxLength(100)]
-        public string PersonToContact { get; set; } = string.Empty;
+        public string? PersonToContact { get; set; }
 
         [Required]
         [MaxLength(15)]

@@ -77,8 +77,8 @@ namespace DFN_BMS.Controllers
         // ============================================================
         // GET: api/StoreMaster/pallet-types
         //
-        // Returns Pallet Type + Colour
-        // Colour is used by frontend only for display.
+        // Returns Pallet Type configuration.
+        // Colour is entered separately in Pallet Master.
         // ============================================================
 
         [HttpGet("pallet-types")]
@@ -296,6 +296,14 @@ namespace DFN_BMS.Controllers
         public async Task<IActionResult> Create(
             [FromBody] StoreMaster model)
         {
+            if (model == null)
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid store data"
+                });
+            }
+
             // -----------------------------------------------
             // Basic validation
             // -----------------------------------------------
@@ -346,18 +354,19 @@ namespace DFN_BMS.Controllers
 
 
             // -----------------------------------------------
-            // Validate colour configured
+            // Validate manually entered pallet colour
             // -----------------------------------------------
 
-            if (string.IsNullOrWhiteSpace(
-                    palletType.ColourCode))
+            if (string.IsNullOrWhiteSpace(model.ColourCode) ||
+                !System.Text.RegularExpressions.Regex.IsMatch(
+                    model.ColourCode.Trim(),
+                    @"^#[0-9A-Fa-f]{6}$"))
             {
-                return BadRequest(
-                    new
-                    {
-                        message =
-                            "Colour is not configured for the selected Pallet Type."
-                    });
+                return BadRequest(new
+                {
+                    message =
+                        "Pallet Colour is required and must be a valid hex code."
+                });
             }
 
 
@@ -421,16 +430,12 @@ namespace DFN_BMS.Controllers
                     palletNumber,
 
                 /*
-                 * IMPORTANT:
-                 *
-                 * Colour is NOT received from frontend.
-                 *
-                 * It is taken directly from
-                 * PALLET_TYPE_MASTER.
+                 * Colour is entered manually by the user.
+                 * It is stored in STORE_MASTER.
                  */
 
                 ColourCode =
-                    palletType.ColourCode.Trim(),
+                    model.ColourCode.Trim().ToUpper(),
 
                 PartNumberId =
                     model.PartNumberId,
@@ -522,6 +527,23 @@ namespace DFN_BMS.Controllers
 
 
             // -----------------------------------------------
+            // Validate manually entered pallet colour
+            // -----------------------------------------------
+
+            if (string.IsNullOrWhiteSpace(model.ColourCode) ||
+                !System.Text.RegularExpressions.Regex.IsMatch(
+                    model.ColourCode.Trim(),
+                    @"^#[0-9A-Fa-f]{6}$"))
+            {
+                return BadRequest(new
+                {
+                    message =
+                        "Pallet Colour is required and must be a valid hex code."
+                });
+            }
+
+
+            // -----------------------------------------------
             // Part Number validation
             // -----------------------------------------------
 
@@ -554,6 +576,9 @@ namespace DFN_BMS.Controllers
 
             entity.PartNumberId =
                 model.PartNumberId;
+
+            entity.ColourCode =
+                model.ColourCode.Trim().ToUpper();
 
             /*
              * PalletTypeId is intentionally NOT changed.

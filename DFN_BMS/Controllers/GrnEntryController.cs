@@ -16,7 +16,7 @@ namespace DFN_BMS.Controllers
     {
         private readonly AppDbContext _context;
 
-        private static readonly string[] ValidGrnTypes = { "Regular", "Sample" };
+        private static readonly string[] ValidLineGrnTypes = { "Regular", "Sample" };
         private static readonly System.Text.RegularExpressions.Regex InvoiceNumberRegex =
             new System.Text.RegularExpressions.Regex(@"^[0-9]+$");
 
@@ -29,6 +29,7 @@ namespace DFN_BMS.Controllers
         public class GrnLineRequest
         {
             public int ItemId { get; set; }
+            public string GrnType { get; set; }
             public string Uom { get; set; }
             public decimal? PalletQuantity { get; set; }
             public decimal Rate { get; set; }
@@ -40,6 +41,7 @@ namespace DFN_BMS.Controllers
             public int SupplierId { get; set; }
             public string PoNumber { get; set; }
             public DateTime PoDate { get; set; }
+            public DateTime GrnDate { get; set; }
             public string GrnType { get; set; }
             public string SupplierInvoiceNumber { get; set; }
             public DateTime SupplierInvoiceDate { get; set; }
@@ -50,7 +52,6 @@ namespace DFN_BMS.Controllers
             // false/omitted means normal auto-generation (or first-ever seed).
             public string? CreatedBy { get; set; }
             public bool OverrideGrnNo { get; set; } = false;
-
             public List<GrnLineRequest> Lines { get; set; } = new List<GrnLineRequest>();
 
         }
@@ -92,6 +93,7 @@ namespace DFN_BMS.Controllers
                     x.SupplierInvoiceDate,
                     x.PoNumber,
                     x.PoDate,
+                    x.GrnDate,
                     x.GrnType,
                     LineCount = x.Lines.Count,
                     PostedLineCount = x.Lines.Count(l => l.IsPosted),
@@ -120,6 +122,7 @@ namespace DFN_BMS.Controllers
                     SupplierName = x.Supplier.SupplierName,
                     x.PoNumber,
                     x.PoDate,
+                    x.GrnDate,
                     x.GrnType,
                     x.SupplierInvoiceNumber,
                     x.SupplierInvoiceDate,
@@ -131,6 +134,7 @@ namespace DFN_BMS.Controllers
                     {
                         l.Id,
                         l.ItemId,
+                        l.GrnType,
                         PartNumber = l.Item.ItemNumber,
                         PartName = l.Item.ItemName,
                         l.Uom,
@@ -252,15 +256,12 @@ namespace DFN_BMS.Controllers
                 if (req == null || req.SupplierId <= 0 ||
                     string.IsNullOrWhiteSpace(req.PoNumber) ||
                     req.PoDate == default ||
-                    string.IsNullOrWhiteSpace(req.GrnType) ||
+                    req.GrnDate == default ||
                     string.IsNullOrWhiteSpace(req.SupplierInvoiceNumber) ||
                     req.SupplierInvoiceDate == default)
                 {
                     return BadRequest(new { message = "Please fill all required header fields" });
                 }
-
-                if (!ValidGrnTypes.Contains(req.GrnType))
-                    return BadRequest(new { message = "GRN Type must be 'Regular' or 'Sample'" });
 
                 if (!InvoiceNumberRegex.IsMatch(req.SupplierInvoiceNumber.Trim()))
                     return BadRequest(new { message = "Supplier Invoice Number must be numbers only" });
@@ -276,6 +277,10 @@ namespace DFN_BMS.Controllers
                 {
                     if (line.ItemId <= 0)
                         return BadRequest(new { message = "Each line needs a valid Part Number" });
+
+                    if (!ValidLineGrnTypes.Contains(line.GrnType?.Trim() ?? ""))
+                        return BadRequest(new { message = "Each line GRN Type must be 'Regular' or 'Sample'" });
+
                     if (line.Rate <= 0)
                         return BadRequest(new { message = "Rate must be greater than 0" });
                     if (line.Quantity <= 0)
@@ -284,13 +289,48 @@ namespace DFN_BMS.Controllers
                         return BadRequest(new { message = $"Pallet Quantity cannot be greater than Quantity for Part Number (Item Id {line.ItemId})" });
 
                     var itemExists = await _context.ItemMasters.AnyAsync(x => x.Id == line.ItemId);
+
                     if (!itemExists)
                         return BadRequest(new { message = $"Part Number (Item Id {line.ItemId}) does not exist" });
+                    var item = await _context.ItemMasters
+                        .FirstOrDefaultAsync(x => x.Id == line.ItemId);
+
+                    if (item == null)
+                    {
+                        return BadRequest(new
+                        {
+                            message = $"Part Number (Item Id {line.ItemId}) does not exist"
+                        });
+                    }
+
+                    // Validate only the current Part Price effective period.
+                    // GRN Date must NOT be compared with Effective From / To.
+                    var today = DateTime.Today;
+
+                    if (item.EffectiveFrom == default ||
+                        item.EffectiveTo == default ||
+                        today < item.EffectiveFrom.Date ||
+                        today > item.EffectiveTo.Date)
+                    {
+                        return BadRequest(new
+                        {
+                            message =
+                                "This Part Price effective date is complete. " +
+                                "Please update the Part Master Effective From / Effective To date and continue."
+                        });
+                    }
                 }
 
                 var (grnNumber, grnNoError) = await ResolveGrnNumberAsync(req.GrnNo, req.OverrideGrnNo);
                 if (grnNoError != null)
                     return BadRequest(new { message = grnNoError });
+
+                var lineTypes = req.Lines
+                    .Select(x => x.GrnType.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var headerGrnType = lineTypes.Count == 1 ? lineTypes[0] : "Mixed";
 
                 var header = new GrnHeader
                 {
@@ -298,7 +338,8 @@ namespace DFN_BMS.Controllers
                     SupplierId = req.SupplierId,
                     PoNumber = req.PoNumber.Trim(),
                     PoDate = req.PoDate,
-                    GrnType = req.GrnType,
+                    GrnDate = req.GrnDate,
+                    GrnType = headerGrnType,
                     SupplierInvoiceNumber = req.SupplierInvoiceNumber.Trim(),
                     SupplierInvoiceDate = req.SupplierInvoiceDate,
                     CreatedDate = DateTime.Now,
@@ -310,6 +351,7 @@ namespace DFN_BMS.Controllers
                     header.Lines.Add(new GrnLine
                     {
                         ItemId = line.ItemId,
+                        GrnType = line.GrnType.Trim(),
                         Uom = line.Uom?.Trim(),
                         PalletQuantity = line.PalletQuantity,
                         Rate = line.Rate,
@@ -358,15 +400,12 @@ namespace DFN_BMS.Controllers
             if (req == null || req.SupplierId <= 0 ||
                 string.IsNullOrWhiteSpace(req.PoNumber) ||
                 req.PoDate == default ||
-                string.IsNullOrWhiteSpace(req.GrnType) ||
+                req.GrnDate == default ||
                 string.IsNullOrWhiteSpace(req.SupplierInvoiceNumber) ||
                 req.SupplierInvoiceDate == default)
             {
                 return BadRequest(new { message = "Please fill all required header fields" });
             }
-
-            if (!ValidGrnTypes.Contains(req.GrnType))
-                return BadRequest(new { message = "GRN Type must be 'Regular' or 'Sample'" });
 
             if (!InvoiceNumberRegex.IsMatch(req.SupplierInvoiceNumber.Trim()))
                 return BadRequest(new { message = "Supplier Invoice Number must be numbers only" });
@@ -378,18 +417,56 @@ namespace DFN_BMS.Controllers
             {
                 if (line.ItemId <= 0)
                     return BadRequest(new { message = "Each line needs a valid Part Number" });
+
+                if (!ValidLineGrnTypes.Contains(line.GrnType?.Trim() ?? ""))
+                    return BadRequest(new { message = "Each line GRN Type must be 'Regular' or 'Sample'" });
+
                 if (line.Rate <= 0)
                     return BadRequest(new { message = "Rate must be greater than 0" });
                 if (line.Quantity <= 0)
                     return BadRequest(new { message = "Quantity must be greater than 0" });
                 if (line.PalletQuantity.HasValue && line.PalletQuantity.Value > line.Quantity)
                     return BadRequest(new { message = $"Pallet Quantity cannot be greater than Quantity for Part Number (Item Id {line.ItemId})" });
+
+                var item = await _context.ItemMasters
+                    .FirstOrDefaultAsync(x => x.Id == line.ItemId);
+
+                if (item == null)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"Part Number (Item Id {line.ItemId}) does not exist"
+                    });
+                }
+
+                // Validate only the current Part Price effective period.
+                // GRN Date must NOT be compared with Effective From / To.
+                var today = DateTime.Today;
+
+                if (item.EffectiveFrom == default ||
+                    item.EffectiveTo == default ||
+                    today < item.EffectiveFrom.Date ||
+                    today > item.EffectiveTo.Date)
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            "This Part Price effective date is complete. " +
+                            "Please update the Part Master Effective From / Effective To date and continue."
+                    });
+                }
             }
+
+            var updateLineTypes = req.Lines
+                .Select(x => x.GrnType.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             header.SupplierId = req.SupplierId;
             header.PoNumber = req.PoNumber.Trim();
             header.PoDate = req.PoDate;
-            header.GrnType = req.GrnType;
+            header.GrnDate = req.GrnDate;
+            header.GrnType = updateLineTypes.Count == 1 ? updateLineTypes[0] : "Mixed";
             header.SupplierInvoiceNumber = req.SupplierInvoiceNumber.Trim();
             header.SupplierInvoiceDate = req.SupplierInvoiceDate;
 
@@ -400,6 +477,7 @@ namespace DFN_BMS.Controllers
                 header.Lines.Add(new GrnLine
                 {
                     ItemId = line.ItemId,
+                    GrnType = line.GrnType.Trim(),
                     Uom = line.Uom?.Trim(),
                     PalletQuantity = line.PalletQuantity,
                     Rate = line.Rate,

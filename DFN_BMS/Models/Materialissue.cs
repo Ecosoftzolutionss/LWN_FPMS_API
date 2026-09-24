@@ -14,12 +14,10 @@ namespace DFN_BMS.Models
         [Required]
         [MaxLength(30)]
         [ValidateNever]
-        public string IssueNumber { get; set; }   // auto-generated, e.g. MI-2026-0001
+        public string? IssueNumber { get; set; }   
 
         [Required]
-        public int ItemId { get; set; }   // FK -> ItemMaster.Id (Part Number)
-
-
+        public int ItemId { get; set; }   
         public ItemMaster? Item { get; set; }
 
         [Required]
@@ -28,20 +26,20 @@ namespace DFN_BMS.Models
 
         [Required]
         [MaxLength(100)]
-        public string IssuedTo { get; set; }      // department / person receiving the material
+        public string IssuedTo { get; set; }      
 
         [Required]
         [MaxLength(100)]
-        public string IssuedBy { get; set; }      // stores person issuing it
+        public string IssuedBy { get; set; }      
 
         [MaxLength(100)]
         public string? StoreLocation { get; set; }
 
         [MaxLength(30)]
-        public string? PalletNo { get; set; }     // which pallet this came from, if known
+        public string? PalletNo { get; set; }    
 
         [MaxLength(30)]
-        public string? GrnNumber { get; set; }    // GRN this pallet came from, from the scanned QR code
+        public string? GrnNumber { get; set; }    
 
         [MaxLength(250)]
         public string? Remarks { get; set; }

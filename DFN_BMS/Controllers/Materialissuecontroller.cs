@@ -19,34 +19,35 @@ namespace DFN_BMS.Controllers
             _context = context;
         }
 
-
-
-
         // =========================================================
-        // GET ALL - ONE ROW PER GRN
+        // GET ALL - ONE ROW PER ISSUE SLIP
+        // One slip can contain material from multiple GRNs.
         // =========================================================
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
             try
             {
-                var list = await _context.MaterialIssues
+                // Load the issue rows first and group in memory. This also
+                // lets us safely build a distinct list of GRNs per slip.
+                var records = await _context.MaterialIssues
                     .AsNoTracking()
-                    .Where(x => !string.IsNullOrWhiteSpace(x.GrnNumber))
-                    .GroupBy(x => x.GrnNumber)
+                    .Where(x => !string.IsNullOrWhiteSpace(x.IssueNumber))
+                    .OrderByDescending(x => x.Id)
+                    .ToListAsync();
+
+                var list = records
+                    .GroupBy(x => x.IssueNumber)
                     .Select(g => new
                     {
-                        Id = g
-                            .OrderByDescending(x => x.Id)
-                            .Select(x => x.Id)
-                            .FirstOrDefault(),
+                        Id = g.Max(x => x.Id),
+                        IssueNumber = g.Key,
 
-                        GrnNumber = g.Key,
-
-                        IssueNumber = g
-                            .OrderByDescending(x => x.Id)
-                            .Select(x => x.IssueNumber)
-                            .FirstOrDefault(),
+                        GrnNumbers = g
+                            .Select(x => x.GrnNumber)
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList(),
 
                         IssueDate = g
                             .OrderByDescending(x => x.Id)
@@ -76,7 +77,7 @@ namespace DFN_BMS.Controllers
                             .FirstOrDefault()
                     })
                     .OrderByDescending(x => x.Id)
-                    .ToListAsync();
+                    .ToList();
 
                 return Ok(list);
             }
@@ -93,8 +94,8 @@ namespace DFN_BMS.Controllers
 
         // =========================================================
         // GET SINGLE MATERIAL ISSUE SLIP
-        // ONE GRN = ONE SLIP
-        // ALL ITEMS UNDER THAT GRN
+        // One IssueNumber = one slip.
+        // A slip can contain multiple GRNs and multiple pallets.
         // =========================================================
         [HttpGet("{id}")]
         public async Task<IActionResult> GetById(int id)
@@ -107,7 +108,6 @@ namespace DFN_BMS.Controllers
                     .Select(x => new
                     {
                         x.Id,
-                        x.GrnNumber,
                         x.IssueNumber,
                         x.IssuedTo,
                         x.IssuedBy,
@@ -126,60 +126,105 @@ namespace DFN_BMS.Controllers
                     });
                 }
 
-                // -----------------------------------------------------
-                // SUPPLIER DETAILS FROM GRN
-                // -----------------------------------------------------
-                var supplierAddress = await _context.GrnHeaders
+                // All rows with the same IssueNumber belong to the same
+                // printed Material Issue Slip.
+                var issueRows = await _context.MaterialIssues
                     .AsNoTracking()
-                    .Where(x => x.GrnNumber == selected.GrnNumber)
-                    .Select(x => x.Supplier == null
-                        ? null
-                        : new
-                        {
-                            SupplierName = x.Supplier.SupplierName,
-                            GstNo = x.Supplier.GstNo
-                        })
-                    .FirstOrDefaultAsync();
-
-                // -----------------------------------------------------
-                // ALL MATERIAL ISSUE ITEMS BELONGING TO THE SAME GRN
-                // -----------------------------------------------------
-                var items = await _context.MaterialIssues
-                    .Include(x => x.Item)
-                    .AsNoTracking()
-                    .Where(x => x.GrnNumber == selected.GrnNumber)
+                    .Where(x => x.IssueNumber == selected.IssueNumber)
                     .OrderBy(x => x.Id)
                     .Select(x => new
                     {
                         x.Id,
                         x.ItemId,
-
                         PartNumber = x.Item != null
                             ? x.Item.ItemNumber
                             : null,
-
                         PartName = x.Item != null
                             ? x.Item.ItemName
                             : null,
-
                         x.Quantity,
                         x.PalletNo,
-                        x.GrnNumber
+                        x.GrnNumber,
+                        x.GrnPalletId
                     })
                     .ToListAsync();
 
+                var grnNumbers = issueRows
+                    .Select(x => x.GrnNumber)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                // Get FIFO pallet numbers from the GRN line linked to each
+                // issued pallet. FIFO-Pallet-No is stored on GrnLine.
+                var palletIds = issueRows
+                    .Where(x => x.GrnPalletId.HasValue)
+                    .Select(x => x.GrnPalletId!.Value)
+                    .Distinct()
+                    .ToList();
+
+                var palletFifoMap = await _context.GrnPallets
+                    .AsNoTracking()
+                    .Where(p => palletIds.Contains(p.Id))
+                    .Select(p => new
+                    {
+                        p.Id,
+                        FifoPalletNo = p.GrnLine != null
+                            ? p.GrnLine.FifoPalletNo
+                            : null
+                    })
+                    .ToDictionaryAsync(
+                        x => x.Id,
+                        x => x.FifoPalletNo
+                    );
+
+                var items = issueRows.Select(x =>
+                {
+                    string? fifoPalletNo = null;
+
+                    if (x.GrnPalletId.HasValue)
+                    {
+                        palletFifoMap.TryGetValue(
+                            x.GrnPalletId.Value,
+                            out fifoPalletNo
+                        );
+                    }
+
+                    return new
+                    {
+                        x.Id,
+                        x.ItemId,
+                        x.PartNumber,
+                        x.PartName,
+                        x.Quantity,
+                        x.PalletNo,
+                        x.GrnNumber,
+                        x.GrnPalletId,
+
+                        // FIFO-PALLET-NO is the FIFO number generated
+                        // against the GRN line.
+                        FifoPalletNo = fifoPalletNo,
+                        FifoNo = fifoPalletNo,
+                        FifoNumber = fifoPalletNo
+                    };
+                }).ToList();
+
+                // Supplier is not required by the current slip because the
+                // FROM/TO section is intentionally hidden. Keep the field
+                // available as null for backward compatibility.
                 return Ok(new
                 {
                     selected.Id,
-                    selected.GrnNumber,
                     selected.IssueNumber,
+                    GrnNumber = grnNumbers.FirstOrDefault(),
+                    GrnNumbers = grnNumbers,
                     selected.IssuedTo,
                     selected.IssuedBy,
                     selected.StoreLocation,
                     selected.Remarks,
                     selected.IssueDate,
                     selected.CreatedDate,
-                    Supplier = supplierAddress,
+                    Supplier = (object?)null,
                     TotalQuantity = items.Sum(x => x.Quantity),
                     Items = items
                 });
@@ -451,7 +496,9 @@ namespace DFN_BMS.Controllers
                             var entity = new MaterialIssue
                             {
                                 IssueNumber =
-                                    await GenerateIssueNumberAsync(),
+                                    string.IsNullOrWhiteSpace(model.IssueNumber)
+                                        ? await GenerateIssueNumberAsync()
+                                        : model.IssueNumber.Trim(),
 
                                 ItemId = model.ItemId,
 
@@ -560,7 +607,9 @@ namespace DFN_BMS.Controllers
                         var genericEntity = new MaterialIssue
                         {
                             IssueNumber =
-                                await GenerateIssueNumberAsync(),
+                                string.IsNullOrWhiteSpace(model.IssueNumber)
+                                    ? await GenerateIssueNumberAsync()
+                                    : model.IssueNumber.Trim(),
 
                             ItemId = model.ItemId,
 

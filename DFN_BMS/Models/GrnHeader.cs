@@ -15,24 +15,29 @@ namespace DFN_BMS.Models
         [Required]
         [MaxLength(30)]
         [ValidateNever]
-        public string GrnNumber { get; set; }   // auto-generated, e.g. GRN-2026-0001
+        public string? GrnNumber { get; set; }
 
         [Required]
-        public int SupplierId { get; set; }   // FK -> SupplierMaster.Id
+        public int SupplierId { get; set; }
 
-    
         public SupplierMaster? Supplier { get; set; }
 
         [Required]
         [MaxLength(30)]
-        public string PoNumber { get; set; }
+        public string? PoNumber { get; set; }
 
         [Required]
         public DateTime PoDate { get; set; }
 
+        // Customer-maintained GRN Date.
+        [Required]
+        public DateTime GrnDate { get; set; }
+
+        // Regular / Sample / Mixed.
+        // Mixed is stored when the same GRN contains both Regular and Sample lines.
         [Required]
         [MaxLength(20)]
-        public string GrnType { get; set; }   // "Regular" or "Sample"
+        public string? GrnType { get; set; }
 
         [Required]
         [MaxLength(30)]
@@ -41,17 +46,16 @@ namespace DFN_BMS.Models
         [Required]
         public DateTime SupplierInvoiceDate { get; set; }
 
-        // ---------- Post / FIFO label fields ----------
         public bool IsPosted { get; set; } = false;
-
         public DateTime? PostedDate { get; set; }
 
         [MaxLength(30)]
-        public string? PalletNo { get; set; }        
+        public string? PalletNo { get; set; }
+
         public string? CreatedBy { get; set; }
 
         [MaxLength(30)]
-        public string? FifoPalletNo { get; set; }      
+        public string? FifoPalletNo { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 
