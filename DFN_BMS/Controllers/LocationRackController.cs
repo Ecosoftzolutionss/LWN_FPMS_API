@@ -14,14 +14,43 @@ namespace DFN_BMS.Controllers
     {
         private readonly AppDbContext _context;
 
+        private const string LeftToRight = "LTR";
+        private const string RightToLeft = "RTL";
+
         public LocationRackController(AppDbContext context)
         {
             _context = context;
         }
 
+        private static string NormalizeDirection(string direction)
+        {
+            return string.Equals(direction, RightToLeft, StringComparison.OrdinalIgnoreCase)
+                ? RightToLeft
+                : LeftToRight;
+        }
+
+        private static string NormalizeRowNo(string rowNo)
+        {
+            if (string.IsNullOrWhiteSpace(rowNo))
+                return rowNo;
+
+            var value = rowNo.Trim().ToUpperInvariant();
+
+            if (value == "G")
+                return "G";
+
+            // Backward compatibility: R1/R2/R3 -> G1/G2/G3.
+            if (value.StartsWith("R") && int.TryParse(value.Substring(1), out var legacyNo))
+                return $"G{legacyNo}";
+
+            if (value.StartsWith("G") && int.TryParse(value.Substring(1), out var newNo))
+                return $"G{newNo}";
+
+            return value;
+        }
+
         // GET: api/LocationRack/store/5
-        // Full Rack -> Column -> Row tree for one store. Feeds both the
-        // left-panel row table and the right-panel visualization.
+        // Full Rack -> Column -> Row tree for one store.
         [HttpGet("store/{storeId}")]
         public async Task<IActionResult> GetRacksForStore(int storeId)
         {
@@ -45,10 +74,15 @@ namespace DFN_BMS.Controllers
                                 .Select(r => new
                                 {
                                     r.Id,
-                                    r.RowNo,
+                                    RowNo = r.RowNo.StartsWith("R")
+                                        ? "G" + r.RowNo.Substring(1)
+                                        : r.RowNo,
                                     r.HasFront,
                                     r.HasRear,
-                                    r.Fixture
+                                    r.Fixture,
+                                    StorageDirection = r.StorageDirection == RightToLeft
+                                        ? RightToLeft
+                                        : LeftToRight
                                 })
                         })
                 })
@@ -58,11 +92,6 @@ namespace DFN_BMS.Controllers
         }
 
         // POST: api/LocationRack/store/5/batch
-        // Body: { rackNo: "A", rowCount: 4, fixture: 1 }
-        // Finds-or-creates the Rack ("A") for this store, adds one new
-        // Column under it with an auto-incrementing ColumnNo (e.g. "A1",
-        // "A2", ...), then generates {rowCount} Rows (R1..Rn) under that
-        // column, each with the given Fixture and Front+Rear checked.
         public class RackBatchRequest
         {
             public string RackNo { get; set; }
@@ -96,7 +125,13 @@ namespace DFN_BMS.Controllers
 
             if (rack == null)
             {
-                rack = new LocationRack { StoreId = storeId, RackNo = rackNo, CreatedDate = DateTime.Now };
+                rack = new LocationRack
+                {
+                    StoreId = storeId,
+                    RackNo = rackNo,
+                    CreatedDate = DateTime.Now
+                };
+
                 _context.LocationRacks.Add(rack);
                 await _context.SaveChangesAsync();
             }
@@ -121,10 +156,11 @@ namespace DFN_BMS.Controllers
                 _context.RackRows.Add(new RackRow
                 {
                     RackColumnId = column.Id,
-                    RowNo = $"R{i}",
+                    RowNo = $"G{i}",
                     HasFront = true,
                     HasRear = true,
                     Fixture = req.Fixture,
+                    StorageDirection = i % 2 == 0 ? RightToLeft : LeftToRight,
                     CreatedDate = DateTime.Now
                 });
             }
@@ -134,19 +170,14 @@ namespace DFN_BMS.Controllers
             return Ok(new { rackId = rack.Id, columnId = column.Id, columnNo });
         }
 
-        // POST: api/LocationRack/store/5/save-grid
-        // Body: { rackNo: "A", rows: [{ columnNo, rowNo, hasFront, hasRear, fixture }, ...] }
-        // Persists the ENTIRE client-built grid in one call. If a Rack
-        // with this RackNo already exists for the store, its Columns/Rows
-        // are replaced wholesale (this is how "edit an existing rack"
-        // works — regenerate the grid, tweak it, Save again).
         public class SaveGridRowRequest
         {
             public string ColumnNo { get; set; }
             public string RowNo { get; set; }
             public bool HasFront { get; set; } = true;
             public bool HasRear { get; set; } = true;
-            public int Fixture { get; set; } = 6;
+            public int Fixture { get; set; } = 1;
+            public string StorageDirection { get; set; } = LeftToRight;
         }
 
         public class SaveGridRequest
@@ -156,6 +187,7 @@ namespace DFN_BMS.Controllers
                 = new System.Collections.Generic.List<SaveGridRowRequest>();
         }
 
+        // POST: api/LocationRack/store/5/save-grid
         [HttpPost("store/{storeId}/save-grid")]
         public async Task<IActionResult> SaveGrid(int storeId, [FromBody] SaveGridRequest req)
         {
@@ -183,24 +215,31 @@ namespace DFN_BMS.Controllers
 
                 if (rack == null)
                 {
-                    rack = new LocationRack { StoreId = storeId, RackNo = rackNo, CreatedDate = DateTime.Now };
+                    rack = new LocationRack
+                    {
+                        StoreId = storeId,
+                        RackNo = rackNo,
+                        CreatedDate = DateTime.Now
+                    };
+
                     _context.LocationRacks.Add(rack);
                     await _context.SaveChangesAsync();
                 }
                 else
                 {
-                    // Replace existing structure wholesale.
+                    // Keep the existing replacement behavior.
                     foreach (var col in rack.Columns.ToList())
                     {
                         _context.RackRows.RemoveRange(col.Rows);
                         _context.RackColumns.Remove(col);
                     }
+
                     await _context.SaveChangesAsync();
                 }
 
-                // Group incoming rows by ColumnNo so each distinct column is
-                // created once with all its rows underneath.
-                var columnGroups = req.Rows.GroupBy(r => r.ColumnNo);
+                var columnGroups = req.Rows
+                    .Where(r => !string.IsNullOrWhiteSpace(r.ColumnNo))
+                    .GroupBy(r => r.ColumnNo.Trim().ToUpper());
 
                 foreach (var group in columnGroups)
                 {
@@ -216,13 +255,22 @@ namespace DFN_BMS.Controllers
 
                     foreach (var r in group)
                     {
+                        var rowNo = NormalizeRowNo(r.RowNo);
+
+                        if (string.IsNullOrWhiteSpace(rowNo))
+                            continue;
+
+                        if (r.Fixture <= 0)
+                            return BadRequest(new { message = $"Fixture must be greater than 0 for {group.Key}-{rowNo}" });
+
                         _context.RackRows.Add(new RackRow
                         {
                             RackColumnId = column.Id,
-                            RowNo = r.RowNo,
+                            RowNo = rowNo,
                             HasFront = r.HasFront,
                             HasRear = r.HasRear,
                             Fixture = r.Fixture,
+                            StorageDirection = NormalizeDirection(r.StorageDirection),
                             CreatedDate = DateTime.Now
                         });
                     }
@@ -230,24 +278,21 @@ namespace DFN_BMS.Controllers
 
                 await _context.SaveChangesAsync();
 
-                return Ok(new { rack.Id, rack.RackNo, message = "Rack Saved" });
+                return Ok(new
+                {
+                    rack.Id,
+                    rack.RackNo,
+                    message = "Rack Saved"
+                });
             }
             catch (Exception ex)
             {
-                // Surface the real error instead of a bare 500 with no body,
-                // so the frontend toast shows something actionable.
                 var detail = ex.InnerException?.Message ?? ex.Message;
                 return StatusCode(500, new { message = $"Save failed: {detail}" });
             }
         }
 
         // GET: api/LocationRack/store/5/occupancy
-        // Returns every currently-occupied slot in this store, as a flat
-        // list of { rackRowId, slotNumber, side, quantity, note }. The
-        // frontend turns this into a lookup set to decide slot colour —
-        // "available" is the default; a slot only turns
-        // occupied-front/occupied-rear once a real StoreMovement exists
-        // for it.
         [HttpGet("store/{storeId}/occupancy")]
         public async Task<IActionResult> GetOccupancy(int storeId)
         {
@@ -262,16 +307,13 @@ namespace DFN_BMS.Controllers
                     m.Side,
                     m.Quantity,
                     m.Note,
-                    PalletNo = m.GrnPallet != null ? m.GrnPallet.PalletNo : null   // NEW
+                    PalletNo = m.GrnPallet != null ? m.GrnPallet.PalletNo : null
                 })
                 .ToListAsync();
 
             return Ok(occupied);
         }
 
-        // POST: api/LocationRack/slots/occupy
-        // Quick manual occupy of one specific slot (no GRN/pallet tie —
-        // used by clicking an "Available" slot in the rack preview).
         public class OccupySlotRequest
         {
             public int RackRowId { get; set; }
@@ -298,7 +340,9 @@ namespace DFN_BMS.Controllers
                 return BadRequest(new { message = "Rack Row not found" });
 
             var alreadyOccupied = await _context.StoreMovements
-                .AnyAsync(m => m.RackRowId == req.RackRowId && m.SlotNumber == req.SlotNumber && m.Side == req.Side);
+                .AnyAsync(m => m.RackRowId == req.RackRowId &&
+                               m.SlotNumber == req.SlotNumber &&
+                               m.Side == req.Side);
 
             if (alreadyOccupied)
                 return BadRequest(new { message = "That slot is already occupied" });
@@ -319,9 +363,6 @@ namespace DFN_BMS.Controllers
             return Ok(new { movement.Id, message = "Slot Occupied" });
         }
 
-        // DELETE: api/LocationRack/slots/occupy/5
-        // Vacates a slot (deletes the movement), turning it back to
-        // "Available".
         [HttpDelete("slots/occupy/{movementId}")]
         public async Task<IActionResult> VacateSlot(int movementId)
         {
@@ -336,7 +377,6 @@ namespace DFN_BMS.Controllers
             return Ok(new { message = "Slot Vacated" });
         }
 
-        // PUT: api/LocationRack/rows/5
         [HttpPut("rows/{rowId}")]
         public async Task<IActionResult> UpdateRow(int rowId, [FromBody] RackRow model)
         {
@@ -354,13 +394,13 @@ namespace DFN_BMS.Controllers
             entity.HasFront = model.HasFront;
             entity.HasRear = model.HasRear;
             entity.Fixture = model.Fixture;
+            entity.StorageDirection = NormalizeDirection(model.StorageDirection);
 
             await _context.SaveChangesAsync();
 
             return Ok(entity);
         }
 
-        // DELETE: api/LocationRack/rows/5
         [HttpDelete("rows/{rowId}")]
         public async Task<IActionResult> DeleteRow(int rowId)
         {
@@ -375,8 +415,6 @@ namespace DFN_BMS.Controllers
             return Ok(new { message = "Deleted Successfully" });
         }
 
-        // DELETE: api/LocationRack/5
-        // Deletes an entire Rack (and its Columns/Rows via cascade).
         [HttpDelete("{rackId}")]
         public async Task<IActionResult> DeleteRack(int rackId)
         {
@@ -390,7 +428,5 @@ namespace DFN_BMS.Controllers
 
             return Ok(new { message = "Deleted Successfully" });
         }
-
-
     }
 }

@@ -12,10 +12,10 @@ namespace DFN_BMS.Models
 
         [Required]
         [MaxLength(100)]
-        public string SupplierGroupType { get; set; }
+        public string? SupplierGroupType { get; set; }
 
         [MaxLength(250)]
-        public string Description { get; set; }
+        public string? Description { get; set; }
 
         public bool IsActive { get; set; } = true;
 

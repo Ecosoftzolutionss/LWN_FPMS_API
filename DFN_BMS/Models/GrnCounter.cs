@@ -17,12 +17,12 @@ namespace DFN_BMS.Models
 
         [Required]
         [MaxLength(20)]
-        public string Prefix { get; set; }
+        public string? Prefix { get; set; }
 
         [Required]
-        public int PadWidth { get; set; }
+        public int   PadWidth { get; set; }
 
         [Required]
-        public int LastSequence { get; set; }
+        public int  LastSequence { get; set; }
     }
 }

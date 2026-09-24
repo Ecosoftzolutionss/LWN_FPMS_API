@@ -15,12 +15,11 @@ namespace DFN_BMS.Models
         [Required]
         [MaxLength(30)]
         [ValidateNever]
-        public string StoreCode { get; set; }   // auto-generated, e.g. ST000001
+        public string StoreCode { get; set; }
 
         [Required]
-        public int StoreMasterId { get; set; }   // FK -> StoreMaster.Id
+        public int StoreMasterId { get; set; }
 
-    
         public StoreMaster? StoreMaster { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;

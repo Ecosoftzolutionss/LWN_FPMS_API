@@ -73,9 +73,7 @@ namespace DFN_BMS.Controllers
             // -----------------------------------------------------
             if (string.IsNullOrWhiteSpace(model.CustomerCode) ||
                 string.IsNullOrWhiteSpace(model.CustomerName) ||
-                string.IsNullOrWhiteSpace(model.CustomerDivision) ||
-                string.IsNullOrWhiteSpace(model.MobileNumber) ||
-                string.IsNullOrWhiteSpace(model.EmailId))
+                string.IsNullOrWhiteSpace(model.CustomerDivision))
             {
                 return BadRequest(new
                 {
@@ -88,13 +86,16 @@ namespace DFN_BMS.Controllers
             // CustomerDivision currently contains:
             // Internal / External
             // -----------------------------------------------------
-            var customerGroupType =
-                model.CustomerDivision.Trim();
+            if (model.CustomerGroupId <= 0)
+            {
+                return BadRequest(new
+                {
+                    message = "Customer Group is required"
+                });
+            }
 
             var customerGroup = await _context.CustomerGroupMasters
-                .FirstOrDefaultAsync(x =>
-                    x.CustomerGroupType.ToLower() ==
-                    customerGroupType.ToLower());
+                .FirstOrDefaultAsync(x => x.Id == model.CustomerGroupId);
 
             if (customerGroup == null)
             {
@@ -104,15 +105,13 @@ namespace DFN_BMS.Controllers
                 });
             }
 
-            bool isExternal =
-                customerGroup.CustomerGroupType.Equals(
-                    "External",
-                    StringComparison.OrdinalIgnoreCase);
+            // Internal customers do not use GST.
+            // External customers may or may not have GST.
+            bool isExternal = customerGroup.CustomerGroupType.Equals(
+                "External", StringComparison.OrdinalIgnoreCase);
 
-            bool isInternal =
-                customerGroup.CustomerGroupType.Equals(
-                    "Internal",
-                    StringComparison.OrdinalIgnoreCase);
+            bool isInternal = customerGroup.CustomerGroupType.Equals(
+                "Internal", StringComparison.OrdinalIgnoreCase);
 
             if (!isExternal && !isInternal)
             {
@@ -121,6 +120,10 @@ namespace DFN_BMS.Controllers
                     message = "Customer Group must be Internal or External"
                 });
             }
+
+            // External customers may or may not have a GST number.
+            // The frontend sends the GST value only when the GST Available checkbox is selected.
+            bool isGstAvailable = isExternal && model.GstAvailable;
 
             // -----------------------------------------------------
             // Customer Name
@@ -140,50 +143,59 @@ namespace DFN_BMS.Controllers
             // -----------------------------------------------------
             // Mobile
             // -----------------------------------------------------
-            var mobileNumber =
-                model.MobileNumber.Trim();
+            // Mobile Number is optional.
+            // Validate the format only when a value is provided.
+            string? mobileNumber = null;
 
-            if (!Regex.IsMatch(mobileNumber, @"^[0-9]{10}$"))
+            if (!string.IsNullOrWhiteSpace(model.MobileNumber))
             {
-                return BadRequest(new
+                mobileNumber = model.MobileNumber.Trim();
+
+                if (!Regex.IsMatch(mobileNumber, @"^[0-9]{10}$"))
                 {
-                    message =
-                        "Mobile Number must be exactly 10 digits"
-                });
+                    return BadRequest(new
+                    {
+                        message =
+                            "Mobile Number must be exactly 10 digits"
+                    });
+                }
             }
 
             // -----------------------------------------------------
             // Email
             // -----------------------------------------------------
-            var email =
-                model.EmailId.Trim();
+            string? email = null;
 
-            if (!Regex.IsMatch(
-                    email,
-                    @"^[^\s@]+@[^\s@]+\.[^\s@]+$"))
+            if (!string.IsNullOrWhiteSpace(model.EmailId))
             {
-                return BadRequest(new
+                email = model.EmailId.Trim();
+
+                if (!Regex.IsMatch(
+                        email,
+                        @"^[^\s@]+@[^\s@]+\.[^\s@]+$"))
                 {
-                    message = "Enter a valid email address"
-                });
+                    return BadRequest(new
+                    {
+                        message = "Enter a valid email address"
+                    });
+                }
             }
 
             // -----------------------------------------------------
             // GST VALIDATION
             //
-            // External -> GST required
-            // Internal -> NOTPROVIDED
+            // External + GST Available checked -> validate GST.
+            // External + unchecked / Internal -> NOTPROVIDED.
             // -----------------------------------------------------
             string gstNo;
 
-            if (isExternal)
+            if (isExternal && model.GstAvailable)
             {
                 if (string.IsNullOrWhiteSpace(model.GstNo))
                 {
                     return BadRequest(new
                     {
-                        message =
-                            "GST No is required for External customers"
+                        message = "GST No is required when GST Available is selected"
                     });
                 }
 
@@ -201,7 +213,7 @@ namespace DFN_BMS.Controllers
             }
             else
             {
-                // Internal customer
+                // GST not applicable for this Customer Group.
                 gstNo = "NOTPROVIDED";
             }
 
@@ -243,17 +255,21 @@ namespace DFN_BMS.Controllers
             // -----------------------------------------------------
             // Email duplicate
             // -----------------------------------------------------
-            var emailExists = await _context.CustomerMasters
-                .AnyAsync(x =>
-                    x.EmailId.ToLower() ==
-                    email.ToLower());
-
-            if (emailExists)
+            if (!string.IsNullOrWhiteSpace(email))
             {
-                return BadRequest(new
+                var emailExists = await _context.CustomerMasters
+                    .AnyAsync(x =>
+                        x.EmailId != null &&
+                        x.EmailId.ToLower() ==
+                        email.ToLower());
+
+                if (emailExists)
                 {
-                    message = "Email ID already exists"
-                });
+                    return BadRequest(new
+                    {
+                        message = "Email ID already exists"
+                    });
+                }
             }
 
             // -----------------------------------------------------
@@ -262,10 +278,11 @@ namespace DFN_BMS.Controllers
             // Only check actual GSTIN.
             // Don't check NOTPROVIDED.
             // -----------------------------------------------------
-            if (isExternal)
+            if (isGstAvailable)
             {
                 var gstExists = await _context.CustomerMasters
                     .AnyAsync(x =>
+                        x.GstNo != null &&
                         x.GstNo.ToLower() ==
                         gstNo.ToLower());
 
@@ -324,9 +341,7 @@ namespace DFN_BMS.Controllers
             // Basic validation
             // -----------------------------------------------------
             if (string.IsNullOrWhiteSpace(model.CustomerName) ||
-                string.IsNullOrWhiteSpace(model.CustomerDivision) ||
-                string.IsNullOrWhiteSpace(model.MobileNumber) ||
-                string.IsNullOrWhiteSpace(model.EmailId))
+                string.IsNullOrWhiteSpace(model.CustomerDivision))
             {
                 return BadRequest(new
                 {
@@ -337,14 +352,17 @@ namespace DFN_BMS.Controllers
             // -----------------------------------------------------
             // Find Customer Group
             // -----------------------------------------------------
-            var customerGroupType =
-                model.CustomerDivision.Trim();
+            if (model.CustomerGroupId <= 0)
+            {
+                return BadRequest(new
+                {
+                    message = "Customer Group is required"
+                });
+            }
 
             var customerGroup =
                 await _context.CustomerGroupMasters
-                    .FirstOrDefaultAsync(x =>
-                        x.CustomerGroupType.ToLower() ==
-                        customerGroupType.ToLower());
+                    .FirstOrDefaultAsync(x => x.Id == model.CustomerGroupId);
 
             if (customerGroup == null)
             {
@@ -354,24 +372,25 @@ namespace DFN_BMS.Controllers
                 });
             }
 
-            bool isExternal =
-                customerGroup.CustomerGroupType.Equals(
-                    "External",
-                    StringComparison.OrdinalIgnoreCase);
+            // Internal customers do not use GST.
+            // External customers may or may not have GST.
+            bool isExternal = customerGroup.CustomerGroupType.Equals(
+                "External", StringComparison.OrdinalIgnoreCase);
 
-            bool isInternal =
-                customerGroup.CustomerGroupType.Equals(
-                    "Internal",
-                    StringComparison.OrdinalIgnoreCase);
+            bool isInternal = customerGroup.CustomerGroupType.Equals(
+                "Internal", StringComparison.OrdinalIgnoreCase);
 
             if (!isExternal && !isInternal)
             {
                 return BadRequest(new
                 {
-                    message =
-                        "Customer Group must be Internal or External"
+                    message = "Customer Group must be Internal or External"
                 });
             }
+
+            // External customers may or may not have a GST number.
+            // The frontend sends the GST value only when the GST Available checkbox is selected.
+            bool isGstAvailable = isExternal && model.GstAvailable;
 
             // -----------------------------------------------------
             // Customer Name
@@ -391,34 +410,44 @@ namespace DFN_BMS.Controllers
             // -----------------------------------------------------
             // Mobile
             // -----------------------------------------------------
-            var mobileNumber =
-                model.MobileNumber.Trim();
+            // Mobile Number is optional.
+            // Validate the format only when a value is provided.
+            string? mobileNumber = null;
 
-            if (!Regex.IsMatch(
-                    mobileNumber,
-                    @"^[0-9]{10}$"))
+            if (!string.IsNullOrWhiteSpace(model.MobileNumber))
             {
-                return BadRequest(new
+                mobileNumber = model.MobileNumber.Trim();
+
+                if (!Regex.IsMatch(
+                        mobileNumber,
+                        @"^[0-9]{10}$"))
                 {
-                    message =
-                        "Mobile Number must be exactly 10 digits"
-                });
+                    return BadRequest(new
+                    {
+                        message =
+                            "Mobile Number must be exactly 10 digits"
+                    });
+                }
             }
 
             // -----------------------------------------------------
             // Email
             // -----------------------------------------------------
-            var email =
-                model.EmailId.Trim();
+            string? email = null;
 
-            if (!Regex.IsMatch(
-                    email,
-                    @"^[^\s@]+@[^\s@]+\.[^\s@]+$"))
+            if (!string.IsNullOrWhiteSpace(model.EmailId))
             {
-                return BadRequest(new
+                email = model.EmailId.Trim();
+
+                if (!Regex.IsMatch(
+                        email,
+                        @"^[^\s@]+@[^\s@]+\.[^\s@]+$"))
                 {
-                    message = "Enter a valid email address"
-                });
+                    return BadRequest(new
+                    {
+                        message = "Enter a valid email address"
+                    });
+                }
             }
 
             // -----------------------------------------------------
@@ -426,14 +455,13 @@ namespace DFN_BMS.Controllers
             // -----------------------------------------------------
             string gstNo;
 
-            if (isExternal)
+            if (isExternal && model.GstAvailable)
             {
                 if (string.IsNullOrWhiteSpace(model.GstNo))
                 {
                     return BadRequest(new
                     {
-                        message =
-                            "GST No is required for External customers"
+                        message = "GST No is required when GST Available is selected"
                     });
                 }
 
@@ -476,29 +504,34 @@ namespace DFN_BMS.Controllers
             // -----------------------------------------------------
             // Email duplicate
             // -----------------------------------------------------
-            var emailExists =
-                await _context.CustomerMasters
-                    .AnyAsync(x =>
-                        x.EmailId.ToLower() ==
-                        email.ToLower() &&
-                        x.Id != id);
-
-            if (emailExists)
+            if (!string.IsNullOrWhiteSpace(email))
             {
-                return BadRequest(new
+                var emailExists =
+                    await _context.CustomerMasters
+                        .AnyAsync(x =>
+                            x.EmailId != null &&
+                            x.EmailId.ToLower() ==
+                            email.ToLower() &&
+                            x.Id != id);
+
+                if (emailExists)
                 {
-                    message = "Email ID already exists"
-                });
+                    return BadRequest(new
+                    {
+                        message = "Email ID already exists"
+                    });
+                }
             }
 
             // -----------------------------------------------------
             // GST duplicate
             // -----------------------------------------------------
-            if (isExternal)
+            if (isGstAvailable)
             {
                 var gstExists =
                     await _context.CustomerMasters
                         .AnyAsync(x =>
+                            x.GstNo != null &&
                             x.GstNo.ToLower() ==
                             gstNo.ToLower() &&
                             x.Id != id);

@@ -13,13 +13,12 @@ namespace DFN_BMS.Controllers
     public class CustomerGroupController : ControllerBase
     {
         private readonly AppDbContext _context;
-        
+
         public CustomerGroupController(AppDbContext context)
         {
             _context = context;
         }
 
-        // GET: api/CustomerGroup
         [HttpGet]
         public async Task<IActionResult> GetAll()
         {
@@ -30,7 +29,6 @@ namespace DFN_BMS.Controllers
             return Ok(list);
         }
 
-        // GET: api/CustomerGroup/5
         [HttpGet("{id}")]
         public async Task<IActionResult> GetById(int id)
         {
@@ -42,23 +40,49 @@ namespace DFN_BMS.Controllers
             return Ok(item);
         }
 
-        // POST: api/CustomerGroup
         [HttpPost]
         public async Task<IActionResult> Create([FromBody] CustomerGroupMaster model)
         {
+            if (model == null)
+                return BadRequest(new { message = "Invalid Customer Group data" });
+
             if (string.IsNullOrWhiteSpace(model.CustomerGroupType))
                 return BadRequest(new { message = "Customer Group Type is required" });
 
-            var typeExists = await _context.CustomerGroupMasters
-                .AnyAsync(x => x.CustomerGroupType.ToLower() == model.CustomerGroupType.Trim().ToLower());
+            var customerGroupType = model.CustomerGroupType.Trim();
+            var description = model.Description?.Trim() ?? string.Empty;
 
-            if (typeExists)
-                return BadRequest(new { message = "Customer Group Type already exists" });
+            // Same Type is allowed when Description is different.
+            // Same Type + same Description is not allowed.
+            var combinationExists = await _context.CustomerGroupMasters
+                .AnyAsync(x =>
+                    x.CustomerGroupType != null &&
+                    x.CustomerGroupType.Trim().ToLower() == customerGroupType.ToLower() &&
+                    (x.Description ?? "").Trim().ToLower() == description.ToLower());
+
+            if (combinationExists)
+            {
+                return BadRequest(new
+                {
+                    message = string.IsNullOrWhiteSpace(description)
+                        ? "Customer Group Type already exists"
+                        : "Customer Group Type with this Description already exists"
+                });
+            }
+
+            // GST is applicable only for External.
+            var hasGST = customerGroupType.Equals(
+                "External",
+                StringComparison.OrdinalIgnoreCase)
+                && model.HasGST;
 
             var entity = new CustomerGroupMaster
             {
-                CustomerGroupType = model.CustomerGroupType.Trim(),
-                Description = model.Description?.Trim(),
+                CustomerGroupType = customerGroupType,
+                Description = string.IsNullOrWhiteSpace(description)
+                    ? null
+                    : description,
+                HasGST = hasGST,
                 IsActive = true,
                 CreatedDate = DateTime.Now
             };
@@ -69,11 +93,16 @@ namespace DFN_BMS.Controllers
             return Ok(entity);
         }
 
-        // PUT: api/CustomerGroup/5
         [HttpPut("{id}")]
-        public async Task<IActionResult> Update(int id, [FromBody] CustomerGroupMaster model)
+        public async Task<IActionResult> Update(
+            int id,
+            [FromBody] CustomerGroupMaster model)
         {
-            var entity = await _context.CustomerGroupMasters.FindAsync(id);
+            if (model == null)
+                return BadRequest(new { message = "Invalid Customer Group data" });
+
+            var entity =
+                await _context.CustomerGroupMasters.FindAsync(id);
 
             if (entity == null)
                 return NotFound(new { message = "Customer Group not found" });
@@ -81,14 +110,37 @@ namespace DFN_BMS.Controllers
             if (string.IsNullOrWhiteSpace(model.CustomerGroupType))
                 return BadRequest(new { message = "Customer Group Type is required" });
 
-            var typeExists = await _context.CustomerGroupMasters
-                .AnyAsync(x => x.CustomerGroupType.ToLower() == model.CustomerGroupType.Trim().ToLower() && x.Id != id);
+            var customerGroupType = model.CustomerGroupType.Trim();
+            var description = model.Description?.Trim() ?? string.Empty;
 
-            if (typeExists)
-                return BadRequest(new { message = "Customer Group Type already exists" });
+            var combinationExists = await _context.CustomerGroupMasters
+                .AnyAsync(x =>
+                    x.Id != id &&
+                    x.CustomerGroupType != null &&
+                    x.CustomerGroupType.Trim().ToLower() == customerGroupType.ToLower() &&
+                    (x.Description ?? "").Trim().ToLower() == description.ToLower());
 
-            entity.CustomerGroupType = model.CustomerGroupType.Trim();
-            entity.Description = model.Description?.Trim();
+            if (combinationExists)
+            {
+                return BadRequest(new
+                {
+                    message = string.IsNullOrWhiteSpace(description)
+                        ? "Customer Group Type already exists"
+                        : "Customer Group Type with this Description already exists"
+                });
+            }
+
+            // GST is applicable only for External.
+            var hasGST = customerGroupType.Equals(
+                "External",
+                StringComparison.OrdinalIgnoreCase)
+                && model.HasGST;
+
+            entity.CustomerGroupType = customerGroupType;
+            entity.Description = string.IsNullOrWhiteSpace(description)
+                ? null
+                : description;
+            entity.HasGST = hasGST;
             entity.ModifiedDate = DateTime.Now;
 
             await _context.SaveChangesAsync();
@@ -96,14 +148,11 @@ namespace DFN_BMS.Controllers
             return Ok(entity);
         }
 
-        // DELETE: api/CustomerGroup/5
-        // DELETE: api/CustomerGroup/5
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(int id)
         {
-            // 1. Check whether Customer Group exists
-            var entity = await _context.CustomerGroupMasters
-                .FindAsync(id);
+            var entity =
+                await _context.CustomerGroupMasters.FindAsync(id);
 
             if (entity == null)
             {
@@ -113,7 +162,6 @@ namespace DFN_BMS.Controllers
                 });
             }
 
-            // 2. Check whether Customer Group is used by any Customer
             var isUsed = await _context.CustomerMasters
                 .AnyAsync(x => x.CustomerGroupId == id);
 
@@ -121,11 +169,11 @@ namespace DFN_BMS.Controllers
             {
                 return BadRequest(new
                 {
-                    message = "This Customer Group cannot be deleted because it is already used by a Customer."
+                    message =
+                        "This Customer Group cannot be deleted because it is already used by a Customer."
                 });
             }
 
-            // 3. Delete Customer Group
             _context.CustomerGroupMasters.Remove(entity);
 
             await _context.SaveChangesAsync();
