@@ -17,9 +17,14 @@ namespace DFN_BMS.Models
         [MaxLength(250)]
         public string? Description { get; set; }
 
+        public bool RequiresPan { get; set; }
+
+        public bool RequiresGst { get; set; }
+
         public bool IsActive { get; set; } = true;
 
-        public DateTime CreatedDate { get; set; } = DateTime.Now;
+        public DateTime CreatedDate { get; set; } =
+            DateTime.Now;
 
         public DateTime? ModifiedDate { get; set; }
     }

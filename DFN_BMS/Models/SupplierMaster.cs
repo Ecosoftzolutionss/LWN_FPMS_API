@@ -10,8 +10,6 @@ namespace DFN_BMS.Models
         [Key]
         public int Id { get; set; }
 
-        // ---------------- SUPPLIER BASIC INFORMATION ----------------
-
         [Required]
         [MaxLength(30)]
         public string SupplierCode { get; set; } = string.Empty;
@@ -26,35 +24,25 @@ namespace DFN_BMS.Models
         [ForeignKey(nameof(SupplierGroupId))]
         public SupplierGroupMaster? SupplierGroup { get; set; }
 
-        // Optional fields
         [MaxLength(100)]
         [EmailAddress(ErrorMessage = "Enter a valid email address")]
         public string? Email { get; set; }
 
         [MaxLength(10)]
-        [RegularExpression(
-            @"^[0-9]{10}$",
-            ErrorMessage = "Contact Number must be exactly 10 digits")]
+        [RegularExpression(@"^[0-9]{10}$", ErrorMessage = "Contact Number must be exactly 10 digits")]
         public string? ContactNumber { get; set; }
 
         [MaxLength(100)]
         public string? PersonToContact { get; set; }
 
-        [Required]
+        // These are conditionally required based on Supplier Group Master.
+        // If RequiresGst = false, GST can be NULL.
         [MaxLength(15)]
-        [RegularExpression(
-            @"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$",
-            ErrorMessage = "Enter a valid 15-character GSTIN (e.g. 33ABCDE1234F1Z5)")]
-        public string GstNo { get; set; } = string.Empty;
+        public string? GstNo { get; set; }
 
-        [Required]
+        // If RequiresPan = false, PAN can be NULL.
         [MaxLength(10)]
-        [RegularExpression(
-            @"^[A-Z]{5}[0-9]{4}[A-Z]{1}$",
-            ErrorMessage = "Enter a valid 10-character PAN (e.g. ABCDE1234F)")]
-        public string PanNo { get; set; } = string.Empty;
-
-        // ---------------- AUDIT INFORMATION ----------------
+        public string? PanNo { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 

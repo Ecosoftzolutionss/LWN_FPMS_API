@@ -727,30 +727,35 @@ namespace DFN_BMS.Controllers
 
         private async Task<string> GenerateIssueNumberAsync()
         {
-            var year = DateTime.Now.Year;
-            var prefix = $"MI-{year}-";
+            var datePrefix = DateTime.Now.ToString("yyMMdd");
 
             var last = await _context.MaterialIssues
                 .Where(x =>
                     x.IssueNumber != null &&
-                    x.IssueNumber.StartsWith(prefix))
+                    x.IssueNumber.StartsWith(datePrefix))
                 .OrderByDescending(x => x.Id)
                 .FirstOrDefaultAsync();
 
-            var nextSeq = 1;
+            var nextSequence = 1;
 
             if (last != null)
             {
-                var numericPart =
-                    last.IssueNumber.Substring(prefix.Length);
+                var sequencePart = last.IssueNumber.Substring(datePrefix.Length);
 
-                if (int.TryParse(numericPart, out var lastSeq))
+                if (int.TryParse(sequencePart, out var lastSequence))
                 {
-                    nextSeq = lastSeq + 1;
+                    nextSequence = lastSequence + 1;
                 }
             }
 
-            return $"{prefix}{nextSeq:D4}";
+            if (nextSequence > 999)
+            {
+                throw new InvalidOperationException(
+                    $"Issue number sequence exceeded 999 for {datePrefix}."
+                );
+            }
+
+            return $"{datePrefix}{nextSequence:D3}";
         }
 
 
