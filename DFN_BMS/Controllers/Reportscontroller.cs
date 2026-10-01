@@ -50,6 +50,7 @@ namespace DFN_BMS.Controllers
         [HttpGet("stock")]
         public async Task<IActionResult> GetStockReport(
             [FromQuery] string? search = null,
+            [FromQuery] string? partNumber = null,
             [FromQuery] int? itemGroupId = null,
             [FromQuery] string? status = null,      // "Safety" | "Reorder" | "Danger" | null (= all)
             [FromQuery] int page = 1,
@@ -96,6 +97,14 @@ namespace DFN_BMS.Controllers
                     .OrderBy(g => g.groupName)
                     .ToListAsync();
 
+                var partNumberOptions = await _context.ItemMasters
+                    .AsNoTracking()
+                    .Where(i => i.ItemNumber != null && i.ItemNumber != "")
+                    .Select(i => i.ItemNumber)
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .ToListAsync();
+
                 // ============================================================
                 // BASE ITEM QUERY + FILTERS
                 // ============================================================
@@ -107,6 +116,13 @@ namespace DFN_BMS.Controllers
 
                 if (itemGroupId.HasValue)
                     itemsQuery = itemsQuery.Where(i => i.ItemGroupId == itemGroupId.Value);
+
+                // PART NUMBER-WISE FILTER
+                if (!string.IsNullOrWhiteSpace(partNumber))
+                {
+                    var pn = partNumber.Trim();
+                    itemsQuery = itemsQuery.Where(i => i.ItemNumber == pn);
+                }
 
                 if (!string.IsNullOrWhiteSpace(search))
                 {
@@ -197,7 +213,8 @@ namespace DFN_BMS.Controllers
                         safetyCount,
                         reorderCount,
                         dangerCount,
-                        itemGroups = itemGroupOptions
+                        itemGroups = itemGroupOptions,
+                        partNumbers = partNumberOptions
                     });
                 }
 
@@ -217,7 +234,8 @@ namespace DFN_BMS.Controllers
                     dangerCount,
                     page,
                     pageSize,
-                    itemGroups = itemGroupOptions
+                    itemGroups = itemGroupOptions,
+                    partNumbers = partNumberOptions
                 });
             }
             catch (Exception ex)
@@ -241,7 +259,12 @@ namespace DFN_BMS.Controllers
         // matches against) — both are surfaced as separate columns so
         // nothing is silently conflated.
         [HttpGet("full")]
-        public async Task<IActionResult> GetFullReport([FromQuery] DateTime? fromDate, [FromQuery] DateTime? toDate)
+        public async Task<IActionResult> GetFullReport(
+            [FromQuery] DateTime? fromDate,
+            [FromQuery] DateTime? toDate,
+            [FromQuery] string? partNumber = null,
+            [FromQuery] int? itemGroupId = null,
+            [FromQuery] int? supplierGroupId = null)
         {
             try
             {
@@ -255,6 +278,14 @@ namespace DFN_BMS.Controllers
                     headerQuery = headerQuery.Where(x => x.PoDate >= fromDate.Value.Date);
                 if (toDate.HasValue)
                     headerQuery = headerQuery.Where(x => x.PoDate <= toDate.Value.Date.AddDays(1).AddTicks(-1));
+
+                if (itemGroupId.HasValue)
+                    headerQuery = headerQuery.Where(x =>
+                        x.Lines.Any(l => l.Item != null && l.Item.ItemGroupId == itemGroupId.Value));
+
+                if (supplierGroupId.HasValue)
+                    headerQuery = headerQuery.Where(x =>
+                        x.Supplier != null && x.Supplier.SupplierGroupId == supplierGroupId.Value);
 
                 var headers = await headerQuery.OrderBy(x => x.PoDate).ToListAsync();
                 var lineIds = headers.SelectMany(h => h.Lines).Select(l => l.Id).ToList();
@@ -300,6 +331,13 @@ namespace DFN_BMS.Controllers
 
                     foreach (var l in lines)
                     {
+                        if (!string.IsNullOrWhiteSpace(partNumber) &&
+                            (l?.Item?.ItemNumber == null ||
+                             !string.Equals(l.Item.ItemNumber, partNumber.Trim(), StringComparison.OrdinalIgnoreCase)))
+                        {
+                            continue;
+                        }
+
                         var pallet = l != null && palletsByLineId.ContainsKey(l.Id) ? palletsByLineId[l.Id] : null;
                         var movement = pallet != null && earliestMovementByPalletId.ContainsKey(pallet.Id)
                             ? earliestMovementByPalletId[pallet.Id]
@@ -364,6 +402,7 @@ namespace DFN_BMS.Controllers
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 10,
             [FromQuery] string? search = null,
+            [FromQuery] string? partNumber = null,
             [FromQuery] int? itemGroupId = null,
             [FromQuery] int? supplierGroupId = null,
             [FromQuery] bool exportAll = false)
@@ -482,6 +521,12 @@ namespace DFN_BMS.Controllers
                         x.SupplierGroupId == supplierGroupId.Value);
                 }
 
+                if (!string.IsNullOrWhiteSpace(partNumber))
+                {
+                    var pn = partNumber.Trim();
+                    rowQuery = rowQuery.Where(x => x.PartNumber == pn);
+                }
+
                 // Search is also performed in SQL Server, not against the
                 // complete dataset in the browser.
                 if (!string.IsNullOrWhiteSpace(search))
@@ -577,6 +622,7 @@ namespace DFN_BMS.Controllers
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 10,
             [FromQuery] string? search = null,
+            [FromQuery] string? partNumber = null,
             [FromQuery] bool exportAll = false)
         {
             try
@@ -636,6 +682,12 @@ namespace DFN_BMS.Controllers
                 {
                     query = query.Where(x =>
                         x.IssueDate < toDate.Value.Date.AddDays(1));
+                }
+
+                if (!string.IsNullOrWhiteSpace(partNumber))
+                {
+                    var pn = partNumber.Trim();
+                    query = query.Where(x => x.PartNumber == pn);
                 }
 
                 // ============================================================
@@ -762,6 +814,7 @@ namespace DFN_BMS.Controllers
           [FromQuery] DateTime? fromDate,
           [FromQuery] DateTime? toDate,
           [FromQuery] string? storeLocation = null,
+          [FromQuery] string? partNumber = null,
           [FromQuery] int? itemGroupId = null,
           [FromQuery] int page = 1,
           [FromQuery] int pageSize = 10,
@@ -899,6 +952,12 @@ namespace DFN_BMS.Controllers
                         x.itemGroupIdValue == itemGroupId.Value);
                 }
 
+                if (!string.IsNullOrWhiteSpace(partNumber))
+                {
+                    var pn = partNumber.Trim();
+                    query = query.Where(x => x.partNumber == pn);
+                }
+
                 if (!string.IsNullOrWhiteSpace(search))
                 {
                     var q = search.Trim();
@@ -979,6 +1038,292 @@ namespace DFN_BMS.Controllers
                         message = $"Failed to load Store Report: {detail}"
                     });
             }
+        }
+
+
+        // ============================================================
+        // OVERALL REPORT
+        //
+        // Combines INWARD (GRN) and OUTWARD (Material Issue) movements.
+        // Supported filters:
+        //   Year, Month, Day, Part Number, Supplier, Supplier Group,
+        //   Part Group, Inward/Outward, Value and Rate.
+        //
+        // Customer / Customer Group are returned as unavailable because
+        // the supplied GRN/MaterialIssue entities do not contain a
+        // CustomerId relationship. They must not be guessed or joined
+        // to unrelated customer transactions.
+        // ============================================================
+        [HttpGet("overall")]
+        public async Task<IActionResult> GetOverallReport(
+            [FromQuery] DateTime? fromDate = null,
+            [FromQuery] DateTime? toDate = null,
+            [FromQuery] int? year = null,
+            [FromQuery] int? month = null,
+            [FromQuery] int? day = null,
+            [FromQuery] string? partNumber = null,
+            [FromQuery] int? supplierId = null,
+            [FromQuery] int? supplierGroupId = null,
+            [FromQuery] int? itemGroupId = null,
+            [FromQuery] string? direction = null,
+            [FromQuery] decimal? minValue = null,
+            [FromQuery] decimal? maxValue = null,
+            [FromQuery] decimal? minRate = null,
+            [FromQuery] decimal? maxRate = null,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 25,
+            [FromQuery] bool exportAll = false)
+        {
+            try
+            {
+                page = Math.Max(page, 1);
+                pageSize = exportAll
+                    ? Math.Clamp(pageSize, 1, 1000000)
+                    : Math.Clamp(pageSize, 10, 200);
+
+                if (month.HasValue && (month < 1 || month > 12))
+                    return BadRequest(new { message = "Month must be between 1 and 12." });
+
+                if (day.HasValue && (day < 1 || day > 31))
+                    return BadRequest(new { message = "Day must be between 1 and 31." });
+
+                var inwardQuery = _context.GrnLines
+                    .AsNoTracking()
+                    .Where(l => l.IsPosted)
+                    .Select(l => new
+                    {
+                        Date = l.Header != null ? l.Header.CreatedDate : DateTime.MinValue,
+                        PartNumber = l.Item != null ? l.Item.ItemNumber : null,
+                        PartName = l.Item != null ? l.Item.ItemName : null,
+                        UOM = l.Item != null
+    ? l.Item.Uom
+    : null,
+                        PartGroupId = l.Item != null ? (int?)l.Item.ItemGroupId : null,
+                        PartGroupName = l.Item != null && l.Item.ItemGroup != null
+                            ? l.Item.ItemGroup.GroupName : null,
+                        SupplierId = l.Header != null && l.Header.Supplier != null
+                            ? (int?)l.Header.Supplier.Id : null,
+                        SupplierName = l.Header != null && l.Header.Supplier != null
+                            ? l.Header.Supplier.SupplierName : null,
+                        SupplierGroupId = l.Header != null && l.Header.Supplier != null
+                            ? (int?)l.Header.Supplier.SupplierGroupId : null,
+                        SupplierGroupName = l.Header != null &&
+                                            l.Header.Supplier != null &&
+                                            l.Header.Supplier.SupplierGroup != null
+                            ? l.Header.Supplier.SupplierGroup.SupplierGroupType : null,
+                        Quantity = l.Quantity,
+                        Rate = l.Rate,
+                        Value = l.TotalValue,
+                        Direction = "Inward",
+                        Reference = l.Header != null ? l.Header.GrnNumber : null
+                    });
+
+                var outwardQuery = _context.MaterialIssues
+                    .AsNoTracking()
+                    .Select(i => new
+                    {
+                        Date = i.IssueDate,
+                        PartNumber = i.Item != null ? i.Item.ItemNumber : null,
+                        PartName = i.Item != null ? i.Item.ItemName : null,
+                        UOM = i.Item != null
+    ? i.Item.Uom
+    : null,
+                        PartGroupId = i.Item != null ? (int?)i.Item.ItemGroupId : null,
+                        PartGroupName = i.Item != null && i.Item.ItemGroup != null
+                            ? i.Item.ItemGroup.GroupName : null,
+                        SupplierId = (int?)null,
+                        SupplierName = (string?)null,
+                        SupplierGroupId = (int?)null,
+                        SupplierGroupName = (string?)null,
+                        Quantity = i.Quantity,
+                        Rate = i.Item != null ? (decimal?)i.Item.UnitPrice : null,
+                        Value = i.Item != null ? (decimal?)(i.Quantity * i.Item.UnitPrice) : null,
+                        Direction = "Outward",
+                        Reference = i.IssueNumber
+                    });
+
+                var inward = await inwardQuery.ToListAsync();
+                var outward = await outwardQuery.ToListAsync();
+
+                var rows = new List<OverallReportRow>();
+
+                rows.AddRange(inward.Select(x => new OverallReportRow
+                {
+                    Date = x.Date,
+                    Year = x.Date.Year,
+                    Month = x.Date.Month,
+                    Day = x.Date.Day,
+                    PartNumber = x.PartNumber,
+                    PartName = x.PartName,
+                    UOM = x.UOM,
+                    PartGroupId = x.PartGroupId,
+                    PartGroupName = x.PartGroupName,
+                    SupplierId = x.SupplierId,
+                    SupplierName = x.SupplierName,
+                    SupplierGroupId = x.SupplierGroupId,
+                    SupplierGroupName = x.SupplierGroupName,
+                    Quantity = x.Quantity,
+                    Inward = x.Quantity,
+                    Outward = 0m,
+                    Rate = x.Rate,
+                    Value = x.Value,
+                    Direction = x.Direction,
+                    Reference = x.Reference
+                }));
+
+                rows.AddRange(outward.Select(x => new OverallReportRow
+                {
+                    Date = x.Date,
+                    Year = x.Date.Year,
+                    Month = x.Date.Month,
+                    Day = x.Date.Day,
+                    PartNumber = x.PartNumber,
+                    PartName = x.PartName,
+                    UOM = x.UOM,
+                    PartGroupId = x.PartGroupId,
+                    PartGroupName = x.PartGroupName,
+                    SupplierId = null,
+                    SupplierName = null,
+                    SupplierGroupId = null,
+                    SupplierGroupName = null,
+                    Quantity = x.Quantity,
+                    Inward = 0m,
+                    Outward = x.Quantity,
+                    Rate = x.Rate ?? 0m,
+                    Value = x.Value ?? 0m,
+                    Direction = x.Direction,
+                    Reference = x.Reference
+                }));
+
+                IEnumerable<OverallReportRow> filtered = rows;
+
+                // DATE RANGE FILTER
+                // The UI now uses From Date / To Date instead of separate
+                // Year / Month / Day selectors. Keep the old Year/Month/Day
+                // parameters for backward compatibility with older clients.
+                if (fromDate.HasValue)
+                {
+                    var from = fromDate.Value.Date;
+                    filtered = filtered.Where(x => x.Date.Date >= from);
+                }
+
+                if (toDate.HasValue)
+                {
+                    var toExclusive = toDate.Value.Date.AddDays(1);
+                    filtered = filtered.Where(x => x.Date < toExclusive);
+                }
+
+                if (year.HasValue)
+                    filtered = filtered.Where(x => x.Year == year.Value);
+                if (month.HasValue)
+                    filtered = filtered.Where(x => x.Month == month.Value);
+                if (day.HasValue)
+                    filtered = filtered.Where(x => x.Day == day.Value);
+
+                if (!string.IsNullOrWhiteSpace(partNumber))
+                    filtered = filtered.Where(x =>
+                        string.Equals(x.PartNumber, partNumber.Trim(), StringComparison.OrdinalIgnoreCase));
+
+                if (supplierId.HasValue)
+                    filtered = filtered.Where(x => x.SupplierId == supplierId.Value);
+
+                if (supplierGroupId.HasValue)
+                    filtered = filtered.Where(x => x.SupplierGroupId == supplierGroupId.Value);
+
+                if (itemGroupId.HasValue)
+                    filtered = filtered.Where(x => x.PartGroupId == itemGroupId.Value);
+
+                if (!string.IsNullOrWhiteSpace(direction) &&
+                    !string.Equals(direction, "All", StringComparison.OrdinalIgnoreCase))
+                {
+                    filtered = filtered.Where(x =>
+                        string.Equals(x.Direction, direction.Trim(), StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (minValue.HasValue)
+                    filtered = filtered.Where(x => x.Value >= minValue.Value);
+                if (maxValue.HasValue)
+                    filtered = filtered.Where(x => x.Value <= maxValue.Value);
+                if (minRate.HasValue)
+                    filtered = filtered.Where(x => x.Rate >= minRate.Value);
+                if (maxRate.HasValue)
+                    filtered = filtered.Where(x => x.Rate <= maxRate.Value);
+
+                var ordered = filtered
+                    .OrderByDescending(x => x.Date)
+                    .ThenBy(x => x.PartNumber)
+                    .ToList();
+
+                var result = new
+                {
+                    data = exportAll
+                        ? ordered
+                        : ordered.Skip((page - 1) * pageSize).Take(pageSize).ToList(),
+                    totalRows = ordered.Count,
+                    totalInward = ordered.Sum(x => x.Inward),
+                    totalOutward = ordered.Sum(x => x.Outward),
+                    totalValue = ordered.Sum(x => x.Value),
+                    availableFilters = new
+                    {
+                        years = rows.Select(x => x.Year).Distinct().OrderByDescending(x => x).ToList(),
+                        months = rows.Select(x => x.Month).Distinct().OrderBy(x => x).ToList(),
+                        days = rows.Select(x => x.Day).Distinct().OrderBy(x => x).ToList(),
+                        partNumbers = rows.Where(x => x.PartNumber != null)
+                            .Select(x => x.PartNumber).Distinct().OrderBy(x => x).ToList(),
+                        suppliers = rows.Where(x => x.SupplierId.HasValue)
+                            .GroupBy(x => new { x.SupplierId, x.SupplierName })
+                            .Select(g => new { id = g.Key.SupplierId, name = g.Key.SupplierName })
+                            .OrderBy(x => x.name).ToList(),
+                        supplierGroups = rows.Where(x => x.SupplierGroupId.HasValue)
+                            .GroupBy(x => new { x.SupplierGroupId, x.SupplierGroupName })
+                            .Select(g => new { id = g.Key.SupplierGroupId, name = g.Key.SupplierGroupName })
+                            .OrderBy(x => x.name).ToList(),
+                        partGroups = rows.Where(x => x.PartGroupId.HasValue)
+                            .GroupBy(x => new { x.PartGroupId, x.PartGroupName })
+                            .Select(g => new { id = g.Key.PartGroupId, name = g.Key.PartGroupName })
+                            .OrderBy(x => x.name).ToList(),
+                        customers = Array.Empty<object>(),
+                        customerGroups = Array.Empty<object>()
+                    },
+                    customerFiltersAvailable = false,
+                    customerFilterMessage =
+                        "Customer and Customer Group are not linked to the GRN/Material Issue entities in the supplied schema."
+                };
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                var detail = ex.InnerException?.Message ?? ex.Message;
+                return StatusCode(500, new
+                {
+                    message = $"Failed to load Overall Report: {detail}"
+                });
+            }
+        }
+
+        private sealed class OverallReportRow
+        {
+            public DateTime Date { get; set; }
+            public int Year { get; set; }
+            public int Month { get; set; }
+            public int Day { get; set; }
+            public string? PartNumber { get; set; }
+            public string? PartName { get; set; }
+            public string? UOM { get; set; }
+            public int? PartGroupId { get; set; }
+            public string? PartGroupName { get; set; }
+            public int? SupplierId { get; set; }
+            public string? SupplierName { get; set; }
+            public int? SupplierGroupId { get; set; }
+            public string? SupplierGroupName { get; set; }
+            public decimal Quantity { get; set; }
+            public decimal Inward { get; set; }
+            public decimal Outward { get; set; }
+            public decimal Rate { get; set; }
+            public decimal Value { get; set; }
+            public string Direction { get; set; } = "";
+            public string? Reference { get; set; }
         }
 
     }
