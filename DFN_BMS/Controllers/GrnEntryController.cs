@@ -705,10 +705,10 @@ namespace DFN_BMS.Controllers
             // PALLET PREFIX
             // ==========================================
 
-            var prefix = palletType.PalletName.Length >= 2
-                ? palletType.PalletName.Substring(0, 2).ToUpper()
-                : palletType.PalletName.ToUpper();
-
+            //var prefix = palletType.PalletName.Length >= 2
+            //    ? palletType.PalletName.Substring(0, 2).ToUpper()
+            //    : palletType.PalletName.ToUpper();
+            var prefix = palletType.PalletName.ToUpper();
             // ==========================================
             // GENERATE PALLET NUMBER
             // Example:
