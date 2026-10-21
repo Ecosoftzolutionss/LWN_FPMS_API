@@ -21,17 +21,17 @@ namespace DFN_BMS.Models
 
         public int? GrnPalletId { get; set; }
 
-      
+
         public GrnPallet? GrnPallet { get; set; }
 
         public int? StorePositionId { get; set; }
 
-      
+
         public StorePosition? StorePosition { get; set; }
 
         public int? RackRowId { get; set; }
 
-     
+
         public RackRow? RackRow { get; set; }
 
         public int? SlotNumber { get; set; }
@@ -50,5 +50,7 @@ namespace DFN_BMS.Models
         public DateTime MovementDate { get; set; } = DateTime.Now;
 
         public string? CreatedBy { get; set; }
+
+        public bool IsGround { get; set; } = false;
     }
 }

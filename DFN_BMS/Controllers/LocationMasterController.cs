@@ -23,21 +23,28 @@ namespace DFN_BMS.Controllers
         public async Task<IActionResult> GetAll()
         {
             var list = await _context.LocationMasters
-                .Include(x => x.StoreMaster)
-                .Include(x => x.Racks)
-                .OrderByDescending(x => x.Id)
-                .Select(x => new
-                {
-                    x.Id,
-                    x.StoreCode,
-                    x.StoreMasterId,
-                    StoreLocation = x.StoreMaster.StoreLocation,
-                    PalletNumber = x.StoreMaster.PalletNumber,
-                    PartNumber = x.StoreMaster.PartNumber,
-                    ColourCode = x.StoreMaster.ColourCode,
-                    RackCount = x.Racks.Count
-                })
-                .ToListAsync();
+     .Include(x => x.StoreMaster)
+     .Include(x => x.Racks)
+     .OrderByDescending(x => x.Id)
+     .Select(x => new
+     {
+         x.Id,
+         x.StoreCode,
+         x.StoreMasterId,
+         StoreLocation = x.StoreMaster.StoreLocation,
+         PalletNumber = x.StoreMaster.PalletNumber,
+
+         // Return the actual part number, not the ItemMaster object
+         PartNumber = x.StoreMaster.PartNumber != null
+             ? x.StoreMaster.PartNumber.ItemNumber
+             : null,
+
+         ColourCode = x.StoreMaster.ColourCode,
+         RackCount = x.Racks.Count
+     })
+     .ToListAsync();
+
+         
 
             return Ok(list);
         }

@@ -19,6 +19,37 @@ namespace DFN_BMS.Controllers
             _context = context;
         }
 
+
+        // GET api/MaterialIssue/grn-parties
+        // Distinct Supplier / Customer ids that appear on GRN headers.
+        [HttpGet("grn-parties")]
+        public async Task<IActionResult> GetGrnParties()
+        {
+            try
+            {
+                var supplierIds = await _context.GrnHeaders
+                    .AsNoTracking()
+                    .Where(h => h.SupplierId != null)
+                    .Select(h => h.SupplierId.Value)
+                    .Distinct()
+                    .ToListAsync();
+
+                var customerIds = await _context.GrnHeaders
+                    .AsNoTracking()
+                    .Where(h => h.CustomerId != null)
+                    .Select(h => h.CustomerId.Value)
+                    .Distinct()
+                    .ToListAsync();
+
+                return Ok(new { supplierIds, customerIds });
+            }
+            catch (Exception ex)
+            {
+                var detail = ex.InnerException?.Message ?? ex.Message;
+                return StatusCode(500, new { message = $"Failed to load GRN parties: {detail}" });
+            }
+        }
+
         // =========================================================
         // GET ALL - ONE ROW PER ISSUE SLIP
         // One slip can contain material from multiple GRNs.
