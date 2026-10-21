@@ -48,6 +48,7 @@ namespace DFN_BMS.Controllers
             try
             {
                 var list = await _context.ItemMasters
+                    .AsNoTracking()
                     .Include(x => x.ItemGroup)
                     .OrderByDescending(x => x.Id)
                     .Select(x => new
@@ -56,6 +57,7 @@ namespace DFN_BMS.Controllers
                         x.ItemNumber,
                         x.ItemName,
                         x.ItemGroupId,
+
                         ItemGroupName = x.ItemGroup != null
                             ? x.ItemGroup.GroupName
                             : null,
@@ -63,11 +65,8 @@ namespace DFN_BMS.Controllers
                         x.HsnCode,
                         x.UnitPrice,
                         x.CustomerOrSupplier,
-
-                        // Effective date range
                         x.EffectiveFrom,
                         x.EffectiveTo,
-
                         x.Uom,
                         x.WeightPerUnit,
                         x.StuffQuantity,
@@ -92,7 +91,7 @@ namespace DFN_BMS.Controllers
                 return StatusCode(500, new
                 {
                     message = "An error occurred while retrieving items.",
-                    error = ex.Message
+                    error = ex.InnerException?.Message ?? ex.Message
                 });
             }
         }
@@ -229,13 +228,13 @@ namespace DFN_BMS.Controllers
                 });
             }
 
-            if (model.EffectiveFrom.Date < DateTime.Today)
-            {
-                return BadRequest(new
-                {
-                    message = "Effective From cannot be a past date"
-                });
-            }
+            //if (model.EffectiveFrom.Date < DateTime.Today)
+            //{
+            //    return BadRequest(new
+            //    {
+            //        message = "Effective From cannot be a past date"
+            //    });
+            //}
 
             // --------------------------------------------------------
             // Effective To validation
@@ -256,6 +255,14 @@ namespace DFN_BMS.Controllers
                 return BadRequest(new
                 {
                     message = "Effective To cannot be before Effective From"
+                });
+            }
+
+            if (model.StuffQuantity <= 0)
+            {
+                return BadRequest(new
+                {
+                    message = "Stuff Quantity is required and must be greater than 0"
                 });
             }
 
@@ -402,10 +409,7 @@ namespace DFN_BMS.Controllers
 
                 SafetyLevel = model.SafetyLevel,
                 ReorderLevel = model.ReorderLevel,
-
-                DangerLevel = string.IsNullOrWhiteSpace(model.DangerLevel)
-                    ? null
-                    : model.DangerLevel.Trim(),
+                DangerLevel = model.DangerLevel,
 
                 CreatedDate = DateTime.Now
             };
@@ -486,13 +490,13 @@ namespace DFN_BMS.Controllers
                 });
             }
 
-            if (model.EffectiveFrom.Date < DateTime.Today)
-            {
-                return BadRequest(new
-                {
-                    message = "Effective From cannot be a past date"
-                });
-            }
+            //if (model.EffectiveFrom.Date < DateTime.Today)
+            //{
+            //    return BadRequest(new
+            //    {
+            //        message = "Effective From cannot be a past date"
+            //    });
+            //}
 
             // --------------------------------------------------------
             // Effective To validation
@@ -513,6 +517,14 @@ namespace DFN_BMS.Controllers
                 return BadRequest(new
                 {
                     message = "Effective To cannot be before Effective From"
+                });
+            }
+
+            if (model.StuffQuantity <= 0)
+            {
+                return BadRequest(new
+                {
+                    message = "Stuff Quantity is required and must be greater than 0"
                 });
             }
 
@@ -642,9 +654,7 @@ namespace DFN_BMS.Controllers
             entity.SafetyLevel = model.SafetyLevel;
             entity.ReorderLevel = model.ReorderLevel;
 
-            entity.DangerLevel = string.IsNullOrWhiteSpace(model.DangerLevel)
-                ? null
-                : model.DangerLevel.Trim();
+            entity.DangerLevel = model.DangerLevel;
 
             entity.ModifiedDate = DateTime.Now;
 

@@ -1,4 +1,5 @@
 ﻿using DFN_BMS.Models;
+using LWN_IPMS_Dashboard.Entities;
 using Microsoft.EntityFrameworkCore;
 using System.Collections.Generic;
 
@@ -36,7 +37,8 @@ namespace DFN_BMS.DB
         public DbSet<MaterialIssue> MaterialIssues { get; set; }
         public DbSet<UomMaster> UomMasters { get; set; }
         public DbSet<StoreVerification> StoreVerification { get; set; }
-
         public DbSet<PalletIssueLock> PalletIssueLocks { get; set; }
+        public DbSet<FifoDashboardSetting> FifoDashboardSettings { get; set;}
+        public DbSet<FifoDashboardPartConfiguration>FifoDashboardPartConfigurations {get;set;}
     }
 }

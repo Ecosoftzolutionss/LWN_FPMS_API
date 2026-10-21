@@ -48,8 +48,9 @@ namespace DFN_BMS.Models
         [Column(TypeName = "decimal(18,3)")]
         public decimal? WeightPerUnit { get; set; }
 
+        [Required]
         [Column(TypeName = "decimal(18,3)")]
-        public decimal? StuffQuantity { get; set; }
+        public decimal StuffQuantity { get; set; }
 
         [MaxLength(100)]
         public string? ItemModel { get; set; }
@@ -78,8 +79,8 @@ namespace DFN_BMS.Models
         public decimal? ReorderLevel { get; set; }
 
         [Required]
-        [MaxLength(20)]
-        public string? DangerLevel { get; set; }
+        [Column(TypeName = "decimal(18,3)")]
+        public decimal DangerLevel { get; set; }
 
         public DateTime CreatedDate { get; set; } = DateTime.Now;
 

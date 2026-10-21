@@ -38,24 +38,24 @@ namespace DFN_BMS.Controllers
 
         public class GrnCreateRequest
         {
+            // Selected Supplier ID OR Customer ID, depending on PartyType.
             public int SupplierId { get; set; }
-            public string PoNumber { get; set; }
+
+            public string? PartyType { get; set; }
+
+            public string PoNumber { get; set; } = string.Empty;
             public DateTime PoDate { get; set; }
             public DateTime GrnDate { get; set; }
-            public string GrnType { get; set; }
-            public string SupplierInvoiceNumber { get; set; }
+            public string GrnType { get; set; } = string.Empty;
+            public string SupplierInvoiceNumber { get; set; } = string.Empty;
             public DateTime SupplierInvoiceDate { get; set; }
-            public string? GrnNo { get; set; }   // manually-typed GRN No (seed OR override)
 
-            // ★ NEW: true when the user explicitly ticked "Edit GRN No" in
-            // the UI to override an already-running auto-sequence mid-way.
-            // false/omitted means normal auto-generation (or first-ever seed).
+            public string? GrnNo { get; set; }
             public string? CreatedBy { get; set; }
             public bool OverrideGrnNo { get; set; } = false;
-            public List<GrnLineRequest> Lines { get; set; } = new List<GrnLineRequest>();
 
+            public List<GrnLineRequest> Lines { get; set; } = new();
         }
-
         // GET: api/StoreMaster/configured-parts
         // Returns only Part Numbers that have a Store Master configuration
         // (a StoreMaster row with PartNumberId set). GRN posting requires this
@@ -72,6 +72,7 @@ namespace DFN_BMS.Controllers
         {
             var query = _context.GrnHeaders
                 .Include(x => x.Supplier)
+                .Include(x => x.Customer)
                 .Include(x => x.Lines)
                 .AsQueryable();
 
@@ -88,7 +89,13 @@ namespace DFN_BMS.Controllers
                 {
                     x.Id,
                     x.GrnNumber,
-                    SupplierName = x.Supplier.SupplierName,
+                    x.SupplierId,
+                    x.CustomerId,
+                    PartyType = x.CustomerId != null ? "Customer" : "Supplier",
+                    // Keep SupplierName for compatibility with existing frontend screens.
+                    SupplierName = x.CustomerId != null
+                        ? x.Customer.CustomerName
+                        : x.Supplier.SupplierName,
                     x.SupplierInvoiceNumber,
                     x.SupplierInvoiceDate,
                     x.PoNumber,
@@ -111,6 +118,7 @@ namespace DFN_BMS.Controllers
         {
             var header = await _context.GrnHeaders
                 .Include(x => x.Supplier)
+                .Include(x => x.Customer)
                 .Include(x => x.Lines)
                     .ThenInclude(l => l.Item)
                 .Where(x => x.Id == id)
@@ -119,7 +127,12 @@ namespace DFN_BMS.Controllers
                     x.Id,
                     x.GrnNumber,
                     x.SupplierId,
-                    SupplierName = x.Supplier.SupplierName,
+                    x.CustomerId,
+                    PartyType = x.CustomerId != null ? "Customer" : "Supplier",
+                    // Keep SupplierName for compatibility with existing frontend screens.
+                    SupplierName = x.CustomerId != null
+                        ? x.Customer.CustomerName
+                        : x.Supplier.SupplierName,
                     x.PoNumber,
                     x.PoDate,
                     x.GrnDate,
@@ -266,10 +279,39 @@ namespace DFN_BMS.Controllers
                 if (!InvoiceNumberRegex.IsMatch(req.SupplierInvoiceNumber.Trim()))
                     return BadRequest(new { message = "Supplier Invoice Number must be numbers only" });
 
-                var supplierExists = await _context.SupplierMasters.AnyAsync(x => x.Id == req.SupplierId);
-                if (!supplierExists)
-                    return BadRequest(new { message = "Selected Supplier does not exist" });
+                bool partyExists;
 
+                if (string.Equals(
+                    req.PartyType?.Trim(),
+                    "Customer",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    partyExists = await _context.CustomerMasters
+                        .AnyAsync(x => x.Id == req.SupplierId);
+                }
+                else if (string.Equals(
+                    req.PartyType?.Trim(),
+                    "Supplier",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    partyExists = await _context.SupplierMasters
+                        .AnyAsync(x => x.Id == req.SupplierId);
+                }
+                else
+                {
+                    return BadRequest(new
+                    {
+                        message = "Please select a valid Supplier or Customer"
+                    });
+                }
+
+                if (!partyExists)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"Selected {req.PartyType} does not exist"
+                    });
+                }
                 if (req.Lines == null || req.Lines.Count == 0)
                     return BadRequest(new { message = "Add at least one part before saving" });
 
@@ -332,10 +374,21 @@ namespace DFN_BMS.Controllers
 
                 var headerGrnType = lineTypes.Count == 1 ? lineTypes[0] : "Mixed";
 
+
+                bool isCustomer = string.Equals(
+    req.PartyType?.Trim(),
+    "Customer",
+    StringComparison.OrdinalIgnoreCase
+);
+
                 var header = new GrnHeader
                 {
                     GrnNumber = grnNumber,
-                    SupplierId = req.SupplierId,
+
+                    // Set only the appropriate foreign key.
+                    SupplierId = isCustomer ? null : req.SupplierId,
+                    CustomerId = isCustomer ? req.SupplierId : null,
+
                     PoNumber = req.PoNumber.Trim(),
                     PoDate = req.PoDate,
                     GrnDate = req.GrnDate,
@@ -364,7 +417,13 @@ namespace DFN_BMS.Controllers
                 _context.GrnHeaders.Add(header);
                 await _context.SaveChangesAsync();
 
-                return Ok(new { header.Id, header.GrnNumber });
+                return Ok(new
+                {
+                    header.Id,
+                    header.GrnNumber
+                });
+
+
             }
             catch (Exception ex)
             {
@@ -409,6 +468,36 @@ namespace DFN_BMS.Controllers
 
             if (!InvoiceNumberRegex.IsMatch(req.SupplierInvoiceNumber.Trim()))
                 return BadRequest(new { message = "Supplier Invoice Number must be numbers only" });
+
+            bool isCustomer = string.Equals(
+                req.PartyType?.Trim(),
+                "Customer",
+                StringComparison.OrdinalIgnoreCase);
+
+            bool isSupplier = string.Equals(
+                req.PartyType?.Trim(),
+                "Supplier",
+                StringComparison.OrdinalIgnoreCase);
+
+            if (!isCustomer && !isSupplier)
+            {
+                return BadRequest(new
+                {
+                    message = "Please select a valid Supplier or Customer"
+                });
+            }
+
+            bool partyExists = isCustomer
+                ? await _context.CustomerMasters.AnyAsync(x => x.Id == req.SupplierId)
+                : await _context.SupplierMasters.AnyAsync(x => x.Id == req.SupplierId);
+
+            if (!partyExists)
+            {
+                return BadRequest(new
+                {
+                    message = $"Selected {req.PartyType} does not exist"
+                });
+            }
 
             if (req.Lines == null || req.Lines.Count == 0)
                 return BadRequest(new { message = "Add at least one part before saving" });
@@ -462,7 +551,8 @@ namespace DFN_BMS.Controllers
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            header.SupplierId = req.SupplierId;
+            header.SupplierId = isCustomer ? null : req.SupplierId;
+            header.CustomerId = isCustomer ? req.SupplierId : null;
             header.PoNumber = req.PoNumber.Trim();
             header.PoDate = req.PoDate;
             header.GrnDate = req.GrnDate;
@@ -705,10 +795,10 @@ namespace DFN_BMS.Controllers
             // PALLET PREFIX
             // ==========================================
 
-            var prefix = palletType.PalletName.Length >= 2
-                ? palletType.PalletName.Substring(0, 2).ToUpper()
-                : palletType.PalletName.ToUpper();
-
+            //var prefix = palletType.PalletName.Length >= 2
+            //    ? palletType.PalletName.Substring(0, 2).ToUpper()
+            //    : palletType.PalletName.ToUpper();
+            var prefix = palletType.PalletName.ToUpper();
             // ==========================================
             // GENERATE PALLET NUMBER
             // Example:
