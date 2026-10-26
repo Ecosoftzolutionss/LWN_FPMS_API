@@ -17,8 +17,8 @@ namespace DFN_BMS.Controllers
         private readonly AppDbContext _context;
 
         private static readonly string[] ValidLineGrnTypes = { "Regular", "Sample" };
-        private static readonly System.Text.RegularExpressions.Regex InvoiceNumberRegex =
-            new System.Text.RegularExpressions.Regex(@"^[0-9]+$");
+        private static readonly Regex InvoiceNumberRegex =
+     new Regex(@"^[A-Za-z0-9]+$");
 
         public GrnEntryController(AppDbContext context)
         {
@@ -277,7 +277,10 @@ namespace DFN_BMS.Controllers
                 }
 
                 if (!InvoiceNumberRegex.IsMatch(req.SupplierInvoiceNumber.Trim()))
-                    return BadRequest(new { message = "Supplier Invoice Number must be numbers only" });
+                    return BadRequest(new
+                    {
+                        message = "Supplier Invoice Number must contain only letters and numbers"
+                    });
 
                 bool partyExists;
 
@@ -389,11 +392,12 @@ namespace DFN_BMS.Controllers
                     SupplierId = isCustomer ? null : req.SupplierId,
                     CustomerId = isCustomer ? req.SupplierId : null,
 
-                    PoNumber = req.PoNumber.Trim(),
+                    PoNumber = req.PoNumber.Trim().ToUpperInvariant(),
                     PoDate = req.PoDate,
                     GrnDate = req.GrnDate,
                     GrnType = headerGrnType,
-                    SupplierInvoiceNumber = req.SupplierInvoiceNumber.Trim(),
+                    SupplierInvoiceNumber =
+    req.SupplierInvoiceNumber.Trim().ToUpperInvariant(),
                     SupplierInvoiceDate = req.SupplierInvoiceDate,
                     CreatedDate = DateTime.Now,
                     CreatedBy = req.CreatedBy?.Trim()
@@ -467,7 +471,10 @@ namespace DFN_BMS.Controllers
             }
 
             if (!InvoiceNumberRegex.IsMatch(req.SupplierInvoiceNumber.Trim()))
-                return BadRequest(new { message = "Supplier Invoice Number must be numbers only" });
+                return BadRequest(new
+                {
+                    message = "Supplier Invoice Number must contain only letters and numbers"
+                });
 
             bool isCustomer = string.Equals(
                 req.PartyType?.Trim(),
@@ -553,11 +560,12 @@ namespace DFN_BMS.Controllers
 
             header.SupplierId = isCustomer ? null : req.SupplierId;
             header.CustomerId = isCustomer ? req.SupplierId : null;
-            header.PoNumber = req.PoNumber.Trim();
+            header.PoNumber = req.PoNumber.Trim().ToUpperInvariant();
             header.PoDate = req.PoDate;
             header.GrnDate = req.GrnDate;
             header.GrnType = updateLineTypes.Count == 1 ? updateLineTypes[0] : "Mixed";
-            header.SupplierInvoiceNumber = req.SupplierInvoiceNumber.Trim();
+            header.SupplierInvoiceNumber =
+      req.SupplierInvoiceNumber.Trim().ToUpperInvariant();
             header.SupplierInvoiceDate = req.SupplierInvoiceDate;
 
             _context.GrnLines.RemoveRange(header.Lines);
