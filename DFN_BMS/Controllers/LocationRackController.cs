@@ -107,8 +107,11 @@ namespace DFN_BMS.Controllers
 
             var rackNo = req.RackNo.Trim().ToUpper();
 
-            if (!System.Text.RegularExpressions.Regex.IsMatch(rackNo, @"^[A-Z]{1,3}$"))
-                return BadRequest(new { message = "Rack No must be letters only (e.g. A, B, AB)" });
+            if (!System.Text.RegularExpressions.Regex.IsMatch(rackNo, @"^[A-Z0-9]{1,10}$"))
+                return BadRequest(new
+                {
+                    message = "Rack No must contain only letters and numbers (e.g. A, AB, AB21)"
+                });
 
             if (req.RowCount <= 0)
                 return BadRequest(new { message = "Row count must be greater than 0" });
@@ -198,8 +201,11 @@ namespace DFN_BMS.Controllers
 
                 var rackNo = req.RackNo.Trim().ToUpper();
 
-                if (!System.Text.RegularExpressions.Regex.IsMatch(rackNo, @"^[A-Z]{1,5}$"))
-                    return BadRequest(new { message = "Rack No must be letters only (e.g. A, B, AB)" });
+                if (!System.Text.RegularExpressions.Regex.IsMatch(rackNo, @"^[A-Z0-9]{1,10}$"))
+                    return BadRequest(new
+                    {
+                        message = "Rack No must contain only letters and numbers (e.g. A, AB, AB21)"
+                    });
 
                 if (req.Rows == null || req.Rows.Count == 0)
                     return BadRequest(new { message = "Generate the grid first" });
