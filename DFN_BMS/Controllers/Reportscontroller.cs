@@ -171,11 +171,35 @@ namespace DFN_BMS.Controllers
                     };
                 }).ToList();
 
+                // ============================================================
+                // ALERT REPORT FILTER
+                // Alert = Danger + Reorder
+                // Safety parts are excluded.
+                // ============================================================
+
                 if (!string.IsNullOrWhiteSpace(status))
                 {
-                    allRows = allRows
-                        .Where(r => string.Equals(r.status, status.Trim(), StringComparison.OrdinalIgnoreCase))
-                        .ToList();
+                    var selectedStatus = status.Trim();
+
+                    if (selectedStatus.Equals(
+                        "Alert",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        allRows = allRows
+                            .Where(r =>
+                                r.status == "Danger" ||
+                                r.status == "Reorder")
+                            .ToList();
+                    }
+                    else
+                    {
+                        allRows = allRows
+                            .Where(r => string.Equals(
+                                r.status,
+                                selectedStatus,
+                                StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                    }
                 }
 
                 // ============================================================

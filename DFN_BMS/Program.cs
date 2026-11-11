@@ -4,12 +4,13 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+
+builder.WebHost.UseUrls("http://0.0.0.0:82");
+
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddHostedService<SessionCleanupService>();
 
 // DB
-//builder.Services.AddDbContext<AppDbContext>(options =>
-//    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(
         builder.Configuration.GetConnectionString("DefaultConnection"),
@@ -19,10 +20,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
             errorNumbersToAdd: null
         )
     )
-    .EnableSensitiveDataLogging()   // shows actual parameter values, not just @p0, @p1
-           .LogTo(Console.WriteLine, LogLevel.Information) // prints every generated SQL statement to console
+    .EnableSensitiveDataLogging()
+    .LogTo(Console.WriteLine, LogLevel.Information)
 );
-
 
 var allowedOrigin = builder.Configuration["Cors:AllowedOrigin"];
 
@@ -36,16 +36,12 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Add services to the container.
-
 builder.Services.AddControllers();
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddSingleton<DFN_BMS.Services.EncryptionService>();
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
