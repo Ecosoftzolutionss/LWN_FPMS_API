@@ -1,6 +1,6 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
@@ -19,6 +19,29 @@ namespace DFN_BMS.Controllers
         {
             _context = context;
         }
+
+        // =========================================================
+        // SINGLE SOURCE OF TRUTH FOR STOCK
+        // ---------------------------------------------------------
+        //   On-hand (per item) = Posted GRN qty (all dates)
+        //                        - Material Issue qty (all dates)
+        //                        (never below 0)
+        //
+        // The "Available Parts" KPI, the available value and the
+        // Stock Status donut ALL use this same number, so they can
+        // never disagree with each other.
+        //
+        // The previous code computed "Available" from pallet rows
+        // (GrnPallets - issues linked to a pallet) while Stock
+        // Status used GRN lines - all issues. Whenever
+        //   * a posted GRN line has pallets that do not add up to
+        //     the line quantity, or
+        //   * an issue is not linked to a pallet (GrnPalletId empty),
+        //   * or a pallet was over-issued (that pallet was dropped
+        //     instead of being netted),
+        // the two figures drifted apart. Use /stock-reconciliation
+        // below to list exactly which items have that data problem.
+        // =========================================================
 
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary(
@@ -60,10 +83,11 @@ namespace DFN_BMS.Controllers
                         .ToListAsync();
 
                 // =====================================================
-                // INWARD - SELECTED MONTH
+                // INWARD - SELECTED MONTH (posted GRN lines)
                 // =====================================================
 
-                var inwardLines = await _context.GrnLines
+                var inwardQuery = _context.GrnLines
+                    .AsNoTracking()
                     .Where(l =>
                         l.IsPosted &&
                         l.Header != null &&
@@ -72,15 +96,15 @@ namespace DFN_BMS.Controllers
                          l.Header.CreatedDate) >= monthStart &&
                         (l.PostedDate ??
                          l.Header.PostedDate ??
-                         l.Header.CreatedDate) < monthEndExclusive)
-                    .ToListAsync();
+                         l.Header.CreatedDate) < monthEndExclusive);
 
                 if (matchingItemIds != null)
                 {
-                    inwardLines = inwardLines
-                        .Where(l => matchingItemIds.Contains(l.ItemId))
-                        .ToList();
+                    inwardQuery = inwardQuery
+                        .Where(l => matchingItemIds.Contains(l.ItemId));
                 }
+
+                var inwardLines = await inwardQuery.ToListAsync();
 
                 var inwardQty = inwardLines.Sum(l => l.Quantity);
                 var inwardPartCount = inwardQty;
@@ -89,22 +113,24 @@ namespace DFN_BMS.Controllers
                     l => l.Quantity * l.Rate);
 
                 // =====================================================
-                // OUTWARD - SELECTED MONTH
+                // OUTWARD - SELECTED MONTH (material issues)
                 // =====================================================
 
-                var issuesThisMonth = await _context.MaterialIssues
-                    .Include(i => i.Item)
+                var issuesQuery = _context.MaterialIssues
+                    .AsNoTracking()
                     .Where(i =>
                         i.IssueDate >= monthStart &&
-                        i.IssueDate < monthEndExclusive)
-                    .ToListAsync();
+                        i.IssueDate < monthEndExclusive);
 
                 if (matchingItemIds != null)
                 {
-                    issuesThisMonth = issuesThisMonth
-                        .Where(i => matchingItemIds.Contains(i.ItemId))
-                        .ToList();
+                    issuesQuery = issuesQuery
+                        .Where(i => matchingItemIds.Contains(i.ItemId));
                 }
+
+                var issuesThisMonth = await issuesQuery
+                    .Include(i => i.Item)
+                    .ToListAsync();
 
                 var outwardQty = issuesThisMonth.Sum(i => i.Quantity);
                 var outwardPartCount = outwardQty;
@@ -114,106 +140,113 @@ namespace DFN_BMS.Controllers
                     (i.Item != null ? i.Item.UnitPrice : 0m));
 
                 // =====================================================
-                // CURRENT AVAILABLE STOCK - CORRECTED FIFO LOGIC
-                // =====================================================
-                //
-                // OLD ISSUE:
-                // The previous logic excluded the entire pallet
-                // whenever even one material issue existed.
-                //
-                // NEW LOGIC:
-                // Available Qty = Pallet Qty - Total Issued Qty
-                //
-                // Example:
-                // Pallet Quantity = 1000
-                // Issued Quantity = 200
-                // Available Quantity = 800
-                //
-                // Fully issued pallets are excluded.
-                // Partially issued pallets retain their balance.
+                // CURRENT STOCK  (ONE LEDGER FOR KPI + DONUT)
                 // =====================================================
 
-                var availablePalletsQuery =
-                    from p in _context.GrnPallets.AsNoTracking()
+                var itemsQuery = _context.ItemMasters
+                    .AsNoTracking()
+                    .AsQueryable();
 
-                    join l in _context.GrnLines.AsNoTracking()
-                        on p.GrnLineId equals l.Id
-
-                    where l.IsPosted
-
-                    select new
-                    {
-                        l.ItemId,
-
-                        OriginalQuantity = p.Quantity,
-
-                        IssuedQuantity =
-                            _context.MaterialIssues
-                                .Where(m => m.GrnPalletId == p.Id)
-                                .Sum(m => (decimal?)m.Quantity) ?? 0m
-                    };
-
-                // Calculate remaining quantity for each pallet.
-                var remainingPalletsQuery =
-                    availablePalletsQuery
-                        .Select(p => new
-                        {
-                            p.ItemId,
-
-                            Quantity =
-                                p.OriginalQuantity - p.IssuedQuantity
-                        });
-
-                // Exclude fully issued or zero-stock pallets.
-                remainingPalletsQuery = remainingPalletsQuery
-                    .Where(p => p.Quantity > 0);
-
-                // Apply selected Part Number filter.
                 if (matchingItemIds != null)
                 {
-                    remainingPalletsQuery = remainingPalletsQuery
-                        .Where(p => matchingItemIds.Contains(p.ItemId));
+                    itemsQuery = itemsQuery.Where(
+                        i => matchingItemIds.Contains(i.Id));
                 }
 
-                var availablePallets =
-                    await remainingPalletsQuery.ToListAsync();
+                var items = await itemsQuery.ToListAsync();
 
-                // Calculate total available quantity.
-                var availableQty = availablePallets.Sum(
-                    p => p.Quantity);
+                var receivedQuery = _context.GrnLines
+                    .AsNoTracking()
+                    .Where(l => l.IsPosted);
 
-                if (availableQty < 0)
-                    availableQty = 0;
+                var issuedQuery = _context.MaterialIssues
+                    .AsNoTracking()
+                    .AsQueryable();
+
+                if (matchingItemIds != null)
+                {
+                    receivedQuery = receivedQuery
+                        .Where(l => matchingItemIds.Contains(l.ItemId));
+
+                    issuedQuery = issuedQuery
+                        .Where(i => matchingItemIds.Contains(i.ItemId));
+                }
+
+                var stockReceivedByItem = await receivedQuery
+                    .GroupBy(l => l.ItemId)
+                    .Select(g => new
+                    {
+                        ItemId = g.Key,
+                        Qty = g.Sum(l => l.Quantity)
+                    })
+                    .ToDictionaryAsync(
+                        x => x.ItemId,
+                        x => x.Qty);
+
+                var stockIssuedByItem = await issuedQuery
+                    .GroupBy(i => i.ItemId)
+                    .Select(g => new
+                    {
+                        ItemId = g.Key,
+                        Qty = g.Sum(i => i.Quantity)
+                    })
+                    .ToDictionaryAsync(
+                        x => x.ItemId,
+                        x => x.Qty);
+
+                int safetyCount = 0;
+                int reorderCount = 0;
+                int dangerCount = 0;
+
+                decimal availableQty = 0m;
+                decimal availableValue = 0m;
+
+                foreach (var item in items)
+                {
+                    var received =
+                        stockReceivedByItem.TryGetValue(
+                            item.Id, out var r)
+                            ? r
+                            : 0m;
+
+                    var issued =
+                        stockIssuedByItem.TryGetValue(
+                            item.Id, out var iss)
+                            ? iss
+                            : 0m;
+
+                    var onHand = received - issued;
+
+                    if (onHand < 0)
+                        onHand = 0;
+
+                    // KPI totals (same number the donut uses)
+                    availableQty += onHand;
+                    availableValue += onHand * item.UnitPrice;
+
+                    // Stock status buckets
+                    if (onHand >= item.SafetyLevel)
+                        safetyCount++;
+
+                    else if (onHand >= item.ReorderLevel)
+                        reorderCount++;
+
+                    else
+                        dangerCount++;
+                }
 
                 var availablePartCount = availableQty;
 
-                // =====================================================
-                // AVAILABLE STOCK VALUE
-                // =====================================================
+                var totalItems = items.Count;
 
-                var availableItemIds = availablePallets
-                    .Select(p => p.ItemId)
-                    .Distinct()
-                    .ToList();
+                int Pct(int count) =>
+                    totalItems == 0
+                        ? 0
+                        : (int)Math.Round(
+                            count * 100m / totalItems);
 
-                var itemPriceDictionary = await _context.ItemMasters
-                    .Where(i => availableItemIds.Contains(i.Id))
-                    .ToDictionaryAsync(
-                        i => i.Id,
-                        i => i.UnitPrice);
-
-                decimal availableValue = 0m;
-
-                foreach (var pallet in availablePallets)
-                {
-                    var unitPrice = itemPriceDictionary.TryGetValue(
-                        pallet.ItemId,
-                        out var price)
-                        ? price
-                        : 0m;
-
-                    availableValue += pallet.Quantity * unitPrice;
-                }
+                var stockAlertCount =
+                    reorderCount + dangerCount;
 
                 // =====================================================
                 // CHART - FIXED FISCAL YEAR (APRIL -> MARCH)
@@ -246,8 +279,8 @@ namespace DFN_BMS.Controllers
                 var chartRangeStart = chartMonths.First().Start;
                 var chartRangeEnd = chartMonths.Last().EndExclusive;
 
-                var chartGrnLines = await _context.GrnLines
-                    .Include(l => l.Header)
+                var chartGrnQuery = _context.GrnLines
+                    .AsNoTracking()
                     .Where(l =>
                         l.IsPosted &&
                         l.Header != null &&
@@ -256,29 +289,33 @@ namespace DFN_BMS.Controllers
                          l.Header.CreatedDate) >= chartRangeStart &&
                         (l.PostedDate ??
                          l.Header.PostedDate ??
-                         l.Header.CreatedDate) < chartRangeEnd)
-                    .ToListAsync();
+                         l.Header.CreatedDate) < chartRangeEnd);
 
                 if (matchingItemIds != null)
                 {
-                    chartGrnLines = chartGrnLines
-                        .Where(l => matchingItemIds.Contains(l.ItemId))
-                        .ToList();
+                    chartGrnQuery = chartGrnQuery
+                        .Where(l => matchingItemIds.Contains(l.ItemId));
                 }
 
-                var chartIssues = await _context.MaterialIssues
-                    .Include(i => i.Item)
+                var chartGrnLines = await chartGrnQuery
+                    .Include(l => l.Header)
+                    .ToListAsync();
+
+                var chartIssuesQuery = _context.MaterialIssues
+                    .AsNoTracking()
                     .Where(i =>
                         i.IssueDate >= chartRangeStart &&
-                        i.IssueDate < chartRangeEnd)
-                    .ToListAsync();
+                        i.IssueDate < chartRangeEnd);
 
                 if (matchingItemIds != null)
                 {
-                    chartIssues = chartIssues
-                        .Where(i => matchingItemIds.Contains(i.ItemId))
-                        .ToList();
+                    chartIssuesQuery = chartIssuesQuery
+                        .Where(i => matchingItemIds.Contains(i.ItemId));
                 }
+
+                var chartIssues = await chartIssuesQuery
+                    .Include(i => i.Item)
+                    .ToListAsync();
 
                 var chart = chartMonths.Select(cm =>
                 {
@@ -301,7 +338,14 @@ namespace DFN_BMS.Controllers
 
                     return new
                     {
-                        label = cm.Start.ToString("MMM yyyy"),
+                        // Numeric keys so the frontend never depends on
+                        // server culture ("Sep" vs "Sept").
+                        year = cm.Year,
+                        month = cm.Month,
+
+                        label = cm.Start.ToString(
+                            "MMM yyyy",
+                            CultureInfo.InvariantCulture),
 
                         inwardQty = monthGrnLines.Sum(
                             l => l.Quantity),
@@ -317,87 +361,6 @@ namespace DFN_BMS.Controllers
                             (i.Item != null ? i.Item.UnitPrice : 0m))
                     };
                 }).ToList();
-
-                // =====================================================
-                // STOCK STATUS
-                // =====================================================
-
-                var itemsQuery = _context.ItemMasters.AsQueryable();
-
-                if (matchingItemIds != null)
-                {
-                    itemsQuery = itemsQuery.Where(
-                        i => matchingItemIds.Contains(i.Id));
-                }
-
-                var items = await itemsQuery.ToListAsync();
-
-                var stockReceivedByItem = await _context.GrnLines
-                    .Where(l => l.IsPosted)
-                    .GroupBy(l => l.ItemId)
-                    .Select(g => new
-                    {
-                        ItemId = g.Key,
-                        Qty = g.Sum(l => l.Quantity)
-                    })
-                    .ToDictionaryAsync(
-                        x => x.ItemId,
-                        x => x.Qty);
-
-                var stockIssuedByItem = await _context.MaterialIssues
-                    .GroupBy(i => i.ItemId)
-                    .Select(g => new
-                    {
-                        ItemId = g.Key,
-                        Qty = g.Sum(i => i.Quantity)
-                    })
-                    .ToDictionaryAsync(
-                        x => x.ItemId,
-                        x => x.Qty);
-
-                int safetyCount = 0;
-                int reorderCount = 0;
-                int dangerCount = 0;
-
-                foreach (var item in items)
-                {
-                    var received =
-                        stockReceivedByItem.TryGetValue(
-                            item.Id, out var r)
-                            ? r
-                            : 0m;
-
-                    var issued =
-                        stockIssuedByItem.TryGetValue(
-                            item.Id, out var iss)
-                            ? iss
-                            : 0m;
-
-                    var onHand = received - issued;
-
-                    if (onHand < 0)
-                        onHand = 0;
-
-                    if (onHand >= item.SafetyLevel)
-                        safetyCount++;
-
-                    else if (onHand >= item.ReorderLevel)
-                        reorderCount++;
-
-                    else
-                        dangerCount++;
-                }
-
-                var totalItems = items.Count;
-
-                int Pct(int count) =>
-                    totalItems == 0
-                        ? 0
-                        : (int)Math.Round(
-                            count * 100m / totalItems);
-
-                var stockAlertCount =
-                    reorderCount + dangerCount;
 
                 // =====================================================
                 // RECENT ACTIVITIES
@@ -656,6 +619,211 @@ namespace DFN_BMS.Controllers
                 return StatusCode(500, new
                 {
                     message = $"Failed to load dashboard: {detail}"
+                });
+            }
+        }
+
+        // =========================================================
+        // STOCK RECONCILIATION (diagnostic)
+        // ---------------------------------------------------------
+        // GET api/dashboard/stock-reconciliation
+        // GET api/dashboard/stock-reconciliation?partNo=2421003050
+        // GET api/dashboard/stock-reconciliation?onlyMismatch=false
+        //
+        // Compares the two ways stock can be calculated and tells
+        // you WHY they differ for each item:
+        //
+        //  ledgerOnHand        = posted GRN qty - all issues
+        //  palletOnHand        = pallet qty     - issues linked to pallets
+        //  receivedNotInPallets= GRN line qty that has no pallet qty
+        //  issuedWithoutPallet = issues with no / unknown pallet link
+        //
+        //  difference = receivedNotInPallets - issuedWithoutPallet
+        // =========================================================
+
+        [HttpGet("stock-reconciliation")]
+        public async Task<IActionResult> GetStockReconciliation(
+            [FromQuery] string? partNo,
+            [FromQuery] bool onlyMismatch = true)
+        {
+            try
+            {
+                var partNoFilter = string.IsNullOrWhiteSpace(partNo)
+                    ? null
+                    : partNo.Trim().ToLower();
+
+                var matchingItemIds = partNoFilter == null
+                    ? null
+                    : await _context.ItemMasters
+                        .Where(i =>
+                            i.ItemNumber != null &&
+                            i.ItemNumber.ToLower() == partNoFilter)
+                        .Select(i => i.Id)
+                        .ToListAsync();
+
+                // ---- ledger (GRN line based) ----
+
+                var receivedQuery = _context.GrnLines
+                    .AsNoTracking()
+                    .Where(l => l.IsPosted);
+
+                var issuedQuery = _context.MaterialIssues
+                    .AsNoTracking()
+                    .AsQueryable();
+
+                if (matchingItemIds != null)
+                {
+                    receivedQuery = receivedQuery
+                        .Where(l => matchingItemIds.Contains(l.ItemId));
+
+                    issuedQuery = issuedQuery
+                        .Where(i => matchingItemIds.Contains(i.ItemId));
+                }
+
+                var receivedByItem = await receivedQuery
+                    .GroupBy(l => l.ItemId)
+                    .Select(g => new
+                    {
+                        ItemId = g.Key,
+                        Qty = g.Sum(l => l.Quantity)
+                    })
+                    .ToDictionaryAsync(x => x.ItemId, x => x.Qty);
+
+                var issuedByItem = await issuedQuery
+                    .GroupBy(i => i.ItemId)
+                    .Select(g => new
+                    {
+                        ItemId = g.Key,
+                        Qty = g.Sum(i => i.Quantity)
+                    })
+                    .ToDictionaryAsync(x => x.ItemId, x => x.Qty);
+
+                // ---- pallet based ----
+
+                var palletQuery =
+                    from p in _context.GrnPallets.AsNoTracking()
+                    join l in _context.GrnLines.AsNoTracking()
+                        on p.GrnLineId equals l.Id
+                    where l.IsPosted
+                    select new
+                    {
+                        l.ItemId,
+                        PalletQty = p.Quantity,
+                        IssuedQuantity =
+                            _context.MaterialIssues
+                                .Where(m => m.GrnPalletId == p.Id)
+                                .Sum(m => (decimal?)m.Quantity) ?? 0m
+                    };
+
+                if (matchingItemIds != null)
+                {
+                    palletQuery = palletQuery
+                        .Where(p => matchingItemIds.Contains(p.ItemId));
+                }
+
+                var palletRows = await palletQuery.ToListAsync();
+
+                var palletByItem = palletRows
+                    .GroupBy(x => x.ItemId)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => new
+                        {
+                            Qty = g.Sum(x => x.PalletQty),
+                            Issued = g.Sum(x => x.IssuedQuantity),
+                            OverIssued = g
+                                .Where(x => x.IssuedQuantity > x.PalletQty)
+                                .Sum(x => x.IssuedQuantity - x.PalletQty)
+                        });
+
+                // ---- combine ----
+
+                var itemIds = receivedByItem.Keys
+                    .Union(issuedByItem.Keys)
+                    .Union(palletByItem.Keys)
+                    .ToList();
+
+                var itemInfo = await _context.ItemMasters
+                    .AsNoTracking()
+                    .Where(i => itemIds.Contains(i.Id))
+                    .ToDictionaryAsync(i => i.Id, i => i);
+
+                var rows = itemIds.Select(id =>
+                {
+                    var received = receivedByItem.TryGetValue(id, out var rc) ? rc : 0m;
+                    var issued = issuedByItem.TryGetValue(id, out var isd) ? isd : 0m;
+
+                    decimal palletQty = 0m, issuedOnPallets = 0m, overIssued = 0m;
+
+                    if (palletByItem.TryGetValue(id, out var pb))
+                    {
+                        palletQty = pb.Qty;
+                        issuedOnPallets = pb.Issued;
+                        overIssued = pb.OverIssued;
+                    }
+
+                    var ledgerOnHand = received - issued;
+                    var palletOnHand = palletQty - issuedOnPallets;
+                    var receivedNotInPallets = received - palletQty;
+                    var issuedWithoutPallet = issued - issuedOnPallets;
+
+                    var reasons = new List<string>();
+
+                    if (receivedNotInPallets != 0)
+                        reasons.Add("Posted GRN line qty does not match its pallet qty");
+
+                    if (issuedWithoutPallet != 0)
+                        reasons.Add("Material issue is not linked to a pallet");
+
+                    if (overIssued > 0)
+                        reasons.Add("A pallet was issued more than its quantity");
+
+                    if (ledgerOnHand < 0)
+                        reasons.Add("Issued more than received (stock would be negative)");
+
+                    itemInfo.TryGetValue(id, out var info);
+
+                    return new
+                    {
+                        itemId = id,
+                        itemNumber = info?.ItemNumber,
+                        itemName = info?.ItemName,
+
+                        received,
+                        issued,
+                        ledgerOnHand,
+
+                        palletQty,
+                        issuedOnPallets,
+                        palletOnHand,
+
+                        receivedNotInPallets,
+                        issuedWithoutPallet,
+                        overIssuedPalletQty = overIssued,
+
+                        difference = ledgerOnHand - palletOnHand,
+                        reasons
+                    };
+                })
+                .Where(r => !onlyMismatch || r.reasons.Count > 0)
+                .OrderByDescending(r => Math.Abs(r.difference))
+                .ToList();
+
+                return Ok(new
+                {
+                    totalItemsChecked = itemIds.Count,
+                    mismatchCount = rows.Count(r => r.reasons.Count > 0),
+                    rows
+                });
+            }
+            catch (Exception ex)
+            {
+                var detail =
+                    ex.InnerException?.Message ?? ex.Message;
+
+                return StatusCode(500, new
+                {
+                    message = $"Failed to build reconciliation: {detail}"
                 });
             }
         }
