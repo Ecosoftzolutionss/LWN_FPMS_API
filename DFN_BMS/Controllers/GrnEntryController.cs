@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -152,6 +153,9 @@ namespace DFN_BMS.Controllers
                         PartName = l.Item.ItemName,
                         l.Uom,
                         l.PalletQuantity,
+                        stuffQuantity = l.Item != null
+        ? l.Item.StuffQuantity
+        : 0,
                         l.Rate,
                         l.Quantity,
                         l.TotalValue,
@@ -620,7 +624,23 @@ namespace DFN_BMS.Controllers
         // posted flag/date/by), without any HTTP-specific error handling.
         // Both PostLine and PostBulkLines call this so the two endpoints
         // can never drift out of sync with each other.
+        // One post at a time, so two users can never read the same CurrentSequence.
+        private static readonly SemaphoreSlim _postLock = new SemaphoreSlim(1, 1);
+
         private async Task<PostLineResult> PostSingleLineAsync(int lineId, string postedBy)
+        {
+            await _postLock.WaitAsync();
+            try
+            {
+                return await PostSingleLineInnerAsync(lineId, postedBy);
+            }
+            finally
+            {
+                _postLock.Release();
+            }
+        }
+
+        private async Task<PostLineResult> PostSingleLineInnerAsync(int lineId, string postedBy)
         {
             var line = await _context.GrnLines
                 .Include(l => l.Item)
@@ -762,6 +782,9 @@ namespace DFN_BMS.Controllers
             return Ok(new { posted, errors });
         }
 
+        // Pallet numbers ROTATE: PREFIX-01 ... PREFIX-<RangeTo>, then start again at
+        // <RangeFrom>. The same label may therefore exist on an older pallet that is
+        // still in stock; pallets are identified by their Id / FIFO pallet number.
         private async Task<string> GenerateGrnPalletNumberAsync(int itemId)
         {
             // Find Store Master configuration for this Part Number
@@ -778,47 +801,16 @@ namespace DFN_BMS.Controllers
             if (palletType == null)
                 return null;
 
-            // ==========================================
-            // NEXT SEQUENCE
-            // ==========================================
-
+            // Next sequence; after RangeTo (e.g. 70) start again from RangeFrom (1).
             int nextSequence = palletType.CurrentSequence + 1;
 
-            // ==========================================
-            // 70 -> 1
-            // ==========================================
-
-            if (nextSequence > palletType.RangeTo)
-            {
+            if (nextSequence > palletType.RangeTo || nextSequence < palletType.RangeFrom)
                 nextSequence = palletType.RangeFrom;
-            }
-
-            // ==========================================
-            // UPDATE CURRENT SEQUENCE
-            // ==========================================
 
             palletType.CurrentSequence = nextSequence;
 
-            // ==========================================
-            // PALLET PREFIX
-            // ==========================================
-
-            //var prefix = palletType.PalletName.Length >= 2
-            //    ? palletType.PalletName.Substring(0, 2).ToUpper()
-            //    : palletType.PalletName.ToUpper();
-            var prefix = palletType.PalletName.ToUpper();
-            // ==========================================
-            // GENERATE PALLET NUMBER
-            // Example:
-            // GI-01
-            // GI-02
-            // ...
-            // GI-70
-            // ==========================================
-
-            var palletNumber = $"{prefix}-{nextSequence:D2}";
-
-            return palletNumber;
+            // Example: GIN-01, GIN-02 ... GIN-70, GIN-01 ...
+            return $"{palletType.PalletName.ToUpper()}-{nextSequence:D2}";
         }
         // DELETE: api/GrnEntry/line/5
         // Deletes a single GRN line. Blocked once that line is posted —

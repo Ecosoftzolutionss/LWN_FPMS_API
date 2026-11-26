@@ -19,6 +19,18 @@ namespace DFN_BMS.Controllers
     //     ALTER TABLE STORE_MOVEMENT
     //         ADD IsGround bit NOT NULL CONSTRAINT DF_STORE_MOVEMENT_IsGround DEFAULT 0;
     //
+    // RECOMMENDED INDEXES (fixes the 15000ms timeout together with the
+    // code changes below - adjust table names to your schema):
+    //
+    //     CREATE INDEX IX_STORE_MOVEMENT_GrnPalletId
+    //         ON STORE_MOVEMENT (GrnPalletId) INCLUDE (Quantity, IsGround);
+    //     CREATE INDEX IX_STORE_MOVEMENT_RackRowId_Slot
+    //         ON STORE_MOVEMENT (RackRowId, SlotNumber, Side);
+    //     CREATE INDEX IX_GRN_PALLET_GrnLineId
+    //         ON GRN_PALLET (GrnLineId);
+    //     CREATE INDEX IX_MATERIAL_ISSUE_GrnPalletId
+    //         ON MATERIAL_ISSUE (GrnPalletId);
+    //
     // A ground movement is a normal StoreMovement row with
     //     IsGround = true, RackRowId = null, Side = "Ground".
     // Quantity is counted in stock exactly like a rack movement, so
@@ -93,6 +105,69 @@ namespace DFN_BMS.Controllers
 
             return (Math.Max(0, capFront - occFront),
                     Math.Max(0, capRear - occRear));
+        }
+
+        // =========================================================
+        // GET: api/StoreMovement/pending-grns
+        // Used by the Store Movement list screen.
+        //
+        // Returns the Ids of posted GRNs that still have at least one
+        // pallet with quantity pending for Store Movement (rack + ground
+        // quantity both count as stored).
+        //
+        // This replaces the old frontend pattern of calling
+        // grn/{id}/pallets once for EVERY posted GRN (which caused
+        // "timeout of 15000ms exceeded").
+        //
+        // GRNs whose pallets are not created yet (pallets are created
+        // lazily by GetPalletsForGrn) are treated as pending too.
+        // =========================================================
+
+        [HttpGet("pending-grns")]
+        public async Task<IActionResult> GetPendingGrns()
+        {
+            try
+            {
+                var issuedPalletIds =
+                    _context.MaterialIssues
+                        .Where(x => x.GrnPalletId.HasValue)
+                        .Select(x => x.GrnPalletId!.Value);
+
+                // GRNs that have a not-issued pallet with quantity left.
+                var withPendingPallets = await _context.GrnPallets
+                    .AsNoTracking()
+                    .Where(p =>
+                        p.GrnLine.IsPosted &&
+                        !issuedPalletIds.Contains(p.Id) &&
+                        p.Quantity >
+                            (_context.StoreMovements
+                                .Where(m => m.GrnPalletId == p.Id && m.Quantity > 0)
+                                .Sum(m => (decimal?)m.Quantity) ?? 0))
+                    .Select(p => p.GrnLine.GrnHeaderId)
+                    .Distinct()
+                    .ToListAsync();
+
+                // GRNs with posted lines that have no pallet rows yet.
+                var withoutPallets = await _context.GrnLines
+                    .AsNoTracking()
+                    .Where(l =>
+                        l.IsPosted &&
+                        !_context.GrnPallets.Any(p => p.GrnLineId == l.Id))
+                    .Select(l => l.GrnHeaderId)
+                    .Distinct()
+                    .ToListAsync();
+
+                var result = withPendingPallets
+                    .Union(withoutPallets)
+                    .ToList();
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                var detail = ex.GetBaseException().Message;
+                return StatusCode(500, new { message = $"Failed to load pending GRNs: {detail}" });
+            }
         }
 
         // =========================================================
@@ -193,7 +268,7 @@ namespace DFN_BMS.Controllers
 
         // =========================================================
         // GET: api/StoreMovement/grn/{grnId}/pallets
-        // Used by Store Movement screen.
+        // Used by Store Movement screen (workspace for ONE GRN).
         // =========================================================
 
         [HttpGet("grn/{grnId}/pallets")]
@@ -203,9 +278,10 @@ namespace DFN_BMS.Controllers
             {
                 // 1. POSTED GRN LINES
                 var lines = await _context.GrnLines
-                    .Include(x => x.Item)
-                    .Where(x => x.GrnHeaderId == grnId && x.IsPosted)
-                    .ToListAsync();
+      .Include(x => x.Item)
+      .Where(x => x.GrnHeaderId == grnId && x.IsPosted)
+      .OrderBy(x => x.Id)
+      .ToListAsync();
 
                 if (lines.Count == 0)
                 {
@@ -213,59 +289,92 @@ namespace DFN_BMS.Controllers
                 }
 
                 // 2. CREATE GRN_PALLET IF IT DOES NOT EXIST
-                foreach (var line in lines)
-                {
-                    var exists = await _context.GrnPallets.AnyAsync(p => p.GrnLineId == line.Id);
+                // Only the rows needed for THIS GRN are queried (the old code
+                // loaded every pallet number of the whole table on each call).
+                var lineIds = lines.Select(l => l.Id).ToList();
 
-                    if (!exists)
+                var existingLineIds = await _context.GrnPallets
+                    .AsNoTracking()
+                    .Where(p => lineIds.Contains(p.GrnLineId))
+                    .Select(p => p.GrnLineId)
+                    .ToListAsync();
+
+                var existingLineIdSet = new HashSet<int>(existingLineIds);
+
+                var missingLines = lines
+                    .Where(l => !existingLineIdSet.Contains(l.Id))
+                    .ToList();
+
+                if (missingLines.Count > 0)
+                {
+                    var seenInRequest = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var line in missingLines)
                     {
-                        var palletNo = line.PalletNo;
+                        var palletNo = line.PalletNo?.Trim();
 
                         if (string.IsNullOrWhiteSpace(palletNo))
                         {
                             return BadRequest(new
                             {
-                                message = $"Pallet number is not available for GRN Line {line.Id}"
+                                message = $"Pallet number missing for GRN Line {line.Id}"
                             });
                         }
 
+                        // Duplicate inside this same request.
+                        if (!seenInRequest.Add(palletNo))
+                        {
+                            return BadRequest(new
+                            {
+                                message = $"Duplicate pallet number {palletNo}. " +
+                                          "This pallet number is already used."
+                            });
+                        }
+                    }
+
+                    // NOTE: pallet numbers rotate (RangeFrom..RangeTo, then start again),
+                    // so the same number may legitimately exist on an older pallet that
+                    // is still in stock. Pallets are identified by Id / FIFO number,
+                    // therefore NO duplicate check against the database is done here.
+
+                    foreach (var line in missingLines)
+                    {
                         _context.GrnPallets.Add(new GrnPallet
                         {
                             GrnLineId = line.Id,
-                            PalletNo = palletNo,
+                            PalletNo = line.PalletNo!.Trim(),
                             Quantity = line.Quantity,
                             Rate = line.Rate,
                             CreatedDate = DateTime.Now
                         });
                     }
+
+                    await _context.SaveChangesAsync();
                 }
 
-                await _context.SaveChangesAsync();
-
-                // 3. ALREADY ISSUED PALLET IDs
+                // 3. ALREADY ISSUED PALLET IDs (kept as a sub-query, not a big list)
                 var issuedPalletIds =
-                    await _context.MaterialIssues
+                    _context.MaterialIssues
                         .AsNoTracking()
                         .Where(x => x.GrnPalletId.HasValue && x.GrnPalletId.Value > 0)
-                        .Select(x => x.GrnPalletId!.Value)
-                        .Distinct()
-                        .ToListAsync();
+                        .Select(x => x.GrnPalletId!.Value);
 
                 // 4. PALLETS FOR THIS GRN
                 // (Do NOT filter StuffedQty > 0 - new pallets must show.)
                 var pallets =
                     await _context.GrnPallets
-                        .Include(x => x.GrnLine)
-                            .ThenInclude(l => l.Item)
+                        .AsNoTracking()
                         .Where(x =>
                             x.GrnLine.GrnHeaderId == grnId &&
                             x.GrnLine.IsPosted &&
                             !issuedPalletIds.Contains(x.Id))
-                        .OrderBy(x => x.PalletNo)
+                       .OrderBy(x => x.GrnLine.FifoPalletNo)
+                       .ThenBy(x => x.Id)
                         .Select(x => new
                         {
                             x.Id,
                             x.PalletNo,
+                            FifoPalletNo = x.GrnLine.FifoPalletNo,
                             x.Quantity,
                             x.Rate,
 
@@ -283,13 +392,23 @@ namespace DFN_BMS.Controllers
                                 _context.StoreMovements
                                     .Where(m =>
                                         m.GrnPalletId == x.Id &&
-                                        m.StorePositionId != null &&
+                                        (m.StorePositionId != null || m.RackRowId != null) &&
                                         m.Quantity > 0)
                                     .Select(m => new
                                     {
                                         m.Id,
-                                        StoreLocation = m.StorePosition.Store.StoreLocation,
-                                        PositionCode = m.StorePosition.PositionCode,
+
+                                        StoreLocation = m.RackRowId != null
+                                            ? m.RackRow.Column.Rack.Store.StoreMaster.StoreLocation
+                                            : m.StorePosition.Store.StoreLocation,
+
+                                        PositionCode = m.RackRowId != null
+                                            ? m.RackRow.Column.Rack.RackNo + "-" +
+                                              m.RackRow.Column.ColumnNo + "-" +
+                                              m.RackRow.RowNo + "-" +
+                                              m.SlotNumber + "-" + m.Side
+                                            : m.StorePosition.PositionCode,
+
                                         m.Side,
                                         m.Quantity
                                     })
@@ -316,8 +435,18 @@ namespace DFN_BMS.Controllers
             }
             catch (Exception ex)
             {
-                var detail = ex.InnerException?.Message ?? ex.Message;
-                return StatusCode(500, new { message = $"Failed to load pallets: {detail}" });
+                var rootException = ex.GetBaseException();
+
+                Console.WriteLine("========== GRN PALLET ERROR ==========");
+                Console.WriteLine(ex.ToString());
+                Console.WriteLine("ROOT ERROR: " + rootException.Message);
+                Console.WriteLine("======================================");
+
+                return StatusCode(500, new
+                {
+                    message = "Failed to load pallets",
+                    detail = rootException.Message
+                });
             }
         }
 
@@ -543,6 +672,18 @@ namespace DFN_BMS.Controllers
                 if (row == null)
                 {
                     return BadRequest(new { message = "Rack Row not found" });
+                }
+
+                var sideEnabled = req.Side == "Front"
+                    ? row.HasFront == true
+                    : row.HasRear == true;
+
+                if (!sideEnabled)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"This row does not have {req.Side} storage."
+                    });
                 }
 
                 var storeConfiguredPartId =
